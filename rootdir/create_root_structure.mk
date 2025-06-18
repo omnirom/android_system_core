@@ -27,7 +27,7 @@ endif
 #
 # create some directories (some are mount points) and symlinks
 LOCAL_POST_INSTALL_CMD := mkdir -p $(addprefix $(TARGET_ROOT_OUT)/, \
-    dev proc sys system data data_mirror odm oem acct config storage mnt apex bootstrap-apex debug_ramdisk \
+    dev proc sys system data data_mirror odm oem config storage mnt apex bootstrap-apex debug_ramdisk \
     linkerconfig second_stage_resources postinstall tmp $(BOARD_ROOT_EXTRA_FOLDERS)); \
     ln -sf /system/bin $(TARGET_ROOT_OUT)/bin; \
     ln -sf /system/etc $(TARGET_ROOT_OUT)/etc; \
@@ -41,7 +41,8 @@ ALL_ROOTDIR_SYMLINKS := \
   $(TARGET_ROOT_OUT)/etc \
   $(TARGET_ROOT_OUT)/bugreports \
   $(TARGET_ROOT_OUT)/d \
-  $(TARGET_ROOT_OUT)/sdcard
+  $(TARGET_ROOT_OUT)/sdcard \
+  $(TARGET_ROOT_OUT)/adb_keys \
 
 ifdef BOARD_USES_VENDORIMAGE
   LOCAL_POST_INSTALL_CMD += ; mkdir -p $(TARGET_ROOT_OUT)/vendor

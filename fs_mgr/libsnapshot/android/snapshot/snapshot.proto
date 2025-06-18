@@ -17,7 +17,6 @@ package android.snapshot;
 
 option optimize_for = LITE_RUNTIME;
 
-// Next: 4
 enum SnapshotState {
     // No snapshot is found.
     NONE = 0;
@@ -34,7 +33,6 @@ enum SnapshotState {
     MERGE_COMPLETED = 3;
 }
 
-// Next: 3
 enum MergePhase {
     // No merge is in progress.
     NO_MERGE = 0;
@@ -46,7 +44,6 @@ enum MergePhase {
     SECOND_PHASE = 2;
 }
 
-// Next: 13
 message SnapshotStatus {
     // Name of the snapshot. This is usually the name of the snapshotted
     // logical partition; for example, "system_b".
@@ -126,14 +123,11 @@ message SnapshotStatus {
 
     reserved 18;
 
-    // Blocks size to be verified at once
-    uint64 verify_block_size = 19;
+    reserved 19;
 
-    // Default value is 2, configures threads to do verification phase
-    uint32 num_verify_threads = 20;
+    reserved 20;
 }
 
-// Next: 8
 enum UpdateState {
     // No update or merge is in progress.
     None = 0;
@@ -162,7 +156,6 @@ enum UpdateState {
     Cancelled = 7;
 };
 
-// Next 14:
 //
 // To understand the source of each failure, read snapshot.cpp. To handle new
 // sources of failure, avoid reusing an existing code; add a new code instead.
@@ -190,7 +183,6 @@ enum MergeFailureCode {
     WrongMergeCountConsistencyCheck = 20;
 };
 
-// Next: 8
 message SnapshotUpdateStatus {
     UpdateState state = 1;
 
@@ -235,9 +227,17 @@ message SnapshotUpdateStatus {
 
     // Number of worker threads to serve I/O from dm-user
     uint32 num_worker_threads = 14;
+
+    // Block size to be verified after OTA reboot
+    uint64 verify_block_size = 15;
+
+    // Default value is 3, configures threads to do verification phase
+    uint32 num_verification_threads = 16;
+
+    // Skips verification of partitions
+    bool skip_verification = 17;
 }
 
-// Next: 10
 message SnapshotMergeReport {
     // Status of the update after the merge attempts.
     UpdateState state = 1;
@@ -282,4 +282,15 @@ message SnapshotMergeReport {
 
     // Size of v3 operation buffer. Needs to be determined during writer initialization
     uint64 estimated_op_count_max = 14;
+}
+
+message VerityHash {
+    // Partition name
+    string partition_name = 1;
+
+    // Salt used for verity hashes
+    string salt = 2;
+
+    // sha256 hash values of each block in the image
+    repeated bytes block_hash = 3;
 }

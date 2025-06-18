@@ -27,8 +27,6 @@ on early-init
     # Set the security context of /postinstall if present.
     restorecon /postinstall
 
-    mkdir /acct/uid
-
     # memory.pressure_level used by lmkd
     chown root system /dev/memcg/memory.pressure_level
     chmod 0040 /dev/memcg/memory.pressure_level
@@ -571,6 +569,9 @@ on post-fs
     chown root log /proc/vmallocinfo
     chmod 0440 /proc/vmallocinfo
 
+    chown root log /proc/allocinfo
+    chmod 0440 /proc/allocinfo
+
     chown root log /proc/slabinfo
     chmod 0440 /proc/slabinfo
 
@@ -621,9 +622,6 @@ on late-fs
 
     # HALs required before storage encryption can get unlocked (FBE)
     class_start early_hal
-
-    # Load trusted keys from dm-verity protected partitions
-    exec -- /system/bin/fsverity_init --load-verified-keys
 
 # Only enable the bootreceiver tracing instance for kernels 5.10 and above.
 on late-fs && property:ro.kernel.version=4.19
@@ -729,7 +727,6 @@ on post-fs-data
     mkdir /data/apex/active 0755 root system
     mkdir /data/apex/backup 0700 root system
     mkdir /data/apex/decompressed 0755 root system encryption=Require
-    mkdir /data/apex/sessions 0700 root system
     mkdir /data/app-staging 0751 system system encryption=DeleteIfNecessary
     mkdir /data/apex/ota_reserved 0700 root system encryption=Require
     setprop apexd.status ""
@@ -790,7 +787,8 @@ on post-fs-data
     mkdir /data/misc/vold 0700 root root
     mkdir /data/misc/boottrace 0771 system shell
     mkdir /data/misc/update_engine 0700 root root
-    mkdir /data/misc/update_engine_log 02750 root log
+    mkdir /data/misc/update_engine_log 02750 root update_engine_log
+    chown root update_engine_log /data/misc/update_engine_log
     mkdir /data/misc/trace 0700 root root
     # create location to store surface and window trace files
     mkdir /data/misc/wmtrace 0700 system system
@@ -904,7 +902,7 @@ on post-fs-data
     mkdir /data/system/users 0775 system system
     # Mkdir and set SELinux security contexts for shutdown-checkpoints.
     # TODO(b/270286197): remove these after couple releases.
-    mkdir /data/system/shutdown-checkpoints 0700 system system
+    mkdir /data/system/shutdown-checkpoints 0755 system system
     restorecon_recursive /data/system/shutdown-checkpoints
 
     # Create the parent directories of the user CE and DE storage directories.
@@ -997,8 +995,11 @@ on post-fs-data
     mkdir /data/misc/stats-service/ 0770 statsd system
     mkdir /data/misc/train-info/ 0770 statsd system
 
-    # Wait for apexd to finish activating APEXes before starting more processes.
+    # TODO(b/400439023): Remove once attest modules flagging is removed.
     wait_for_prop apexd.status activated
+    # Wait for KeyMints to receive APEX module info before starting code from updateable APEXes.
+    # This is to prevent APEX modules from interfering in module measurement.
+    wait_for_prop keystore.module_hash.sent true
     perform_apex_config
 
     exec_start system_aconfigd_mainline_init
@@ -1233,7 +1234,7 @@ on property:sys.boot_completed=1
 # and chown/chmod does not work for /proc/sys/ entries.
 # So proxy writes through init.
 on property:sys.sysctl.extra_free_kbytes=*
-    exec -- /system/bin/extra_free_kbytes.sh ${sys.sysctl.extra_free_kbytes}
+    exec_background -- /system/bin/extra_free_kbytes.sh ${sys.sysctl.extra_free_kbytes}
 
 # Allow users to drop caches
 on property:perf.drop_caches=3

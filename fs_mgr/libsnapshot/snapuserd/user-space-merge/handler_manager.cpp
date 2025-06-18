@@ -52,11 +52,9 @@ SnapshotHandlerManager::SnapshotHandlerManager() {
 std::shared_ptr<HandlerThread> SnapshotHandlerManager::AddHandler(
         const std::string& misc_name, const std::string& cow_device_path,
         const std::string& backing_device, const std::string& base_path_merge,
-        std::shared_ptr<IBlockServerOpener> opener, int num_worker_threads, bool use_iouring,
-        bool o_direct, uint32_t cow_op_merge_size) {
-    auto snapuserd = std::make_shared<SnapshotHandler>(
-            misc_name, cow_device_path, backing_device, base_path_merge, opener, num_worker_threads,
-            use_iouring, perform_verification_, o_direct, cow_op_merge_size);
+        std::shared_ptr<IBlockServerOpener> opener, HandlerOptions options) {
+    auto snapuserd = std::make_shared<SnapshotHandler>(misc_name, cow_device_path, backing_device,
+                                                       base_path_merge, opener, options);
     if (!snapuserd->InitCowDevice()) {
         LOG(ERROR) << "Failed to initialize Snapuserd";
         return nullptr;
@@ -381,6 +379,26 @@ auto SnapshotHandlerManager::FindHandler(std::lock_guard<std::mutex>* proof_of_l
         }
     }
     return dm_users_.end();
+}
+
+void SnapshotHandlerManager::PauseMerge() {
+    std::lock_guard<std::mutex> guard(lock_);
+
+    for (auto iter = dm_users_.begin(); iter != dm_users_.end(); iter++) {
+        if (!(*iter)->ThreadTerminated()) {
+            (*iter)->snapuserd()->PauseMergeThreads();
+        }
+    }
+}
+
+void SnapshotHandlerManager::ResumeMerge() {
+    std::lock_guard<std::mutex> guard(lock_);
+
+    for (auto iter = dm_users_.begin(); iter != dm_users_.end(); iter++) {
+        if (!(*iter)->ThreadTerminated()) {
+            (*iter)->snapuserd()->ResumeMergeThreads();
+        }
+    }
 }
 
 }  // namespace snapshot

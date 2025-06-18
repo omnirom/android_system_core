@@ -88,6 +88,7 @@
 #include "snapuserd_transition.h"
 #include "subcontext.h"
 #include "system/core/init/property_service.pb.h"
+#include "tradeinmode.h"
 #include "util.h"
 
 #ifndef RECOVERY
@@ -100,6 +101,8 @@ using namespace std::string_literals;
 using android::base::boot_clock;
 using android::base::ConsumePrefix;
 using android::base::GetProperty;
+using android::base::GetIntProperty;
+using android::base::GetBoolProperty;
 using android::base::ReadFileToString;
 using android::base::SetProperty;
 using android::base::StringPrintf;
@@ -108,6 +111,8 @@ using android::base::Trim;
 using android::base::unique_fd;
 using android::fs_mgr::AvbHandle;
 using android::snapshot::SnapshotManager;
+using android::base::WaitForProperty;
+using android::base::WriteStringToFile;
 
 namespace android {
 namespace init {
@@ -919,6 +924,39 @@ static Result<void> ConnectEarlyStageSnapuserdAction(const BuiltinArguments& arg
     return {};
 }
 
+static Result<void> CheckTradeInModeStatus([[maybe_unused]] const BuiltinArguments& args) {
+    RequestTradeInModeWipeIfNeeded();
+    return {};
+}
+
+static void SecondStageBootMonitor(int timeout_sec) {
+    auto cur_time = boot_clock::now().time_since_epoch();
+    int cur_sec = std::chrono::duration_cast<std::chrono::seconds>(cur_time).count();
+    int extra_sec = timeout_sec <= cur_sec? 0 : timeout_sec - cur_sec;
+    auto boot_timeout = std::chrono::seconds(extra_sec);
+
+    LOG(INFO) << "Started BootMonitorThread, expiring in "
+              << timeout_sec
+              << " seconds from boot-up";
+
+    if (!WaitForProperty("sys.boot_completed", "1", boot_timeout)) {
+        LOG(ERROR) << "BootMonitorThread: boot didn't complete in "
+                   << timeout_sec
+                   << " seconds. Trigger a panic!";
+
+        // add a short delay for logs to be flushed out.
+        std::this_thread::sleep_for(200ms);
+
+        // trigger a kernel panic
+        WriteStringToFile("c", PROC_SYSRQ);
+    }
+}
+
+static void StartSecondStageBootMonitor(int timeout_sec) {
+    std::thread monitor_thread(&SecondStageBootMonitor, timeout_sec);
+    monitor_thread.detach();
+}
+
 int SecondStageMain(int argc, char** argv) {
     if (REBOOT_BOOTLOADER_ON_PANIC) {
         InstallRebootSignalHandlers();
@@ -1010,6 +1048,14 @@ int SecondStageMain(int argc, char** argv) {
     InstallInitNotifier(&epoll);
     StartPropertyService(&property_fd);
 
+    // If boot_timeout property has been set in a debug build, start the boot monitor
+    if (GetBoolProperty("ro.debuggable", false)) {
+        int timeout = GetIntProperty("ro.boot.boot_timeout", 0);
+        if (timeout > 0) {
+            StartSecondStageBootMonitor(timeout);
+        }
+    }
+
     // Make the time that init stages started available for bootstat to log.
     RecordStageBoottimes(start_time);
 
@@ -1055,6 +1101,14 @@ int SecondStageMain(int argc, char** argv) {
         }
     }
 
+    // This needs to happen before SetKptrRestrictAction, as we are trying to
+    // open /proc/kallsyms while still being allowed to see the full addresses
+    // (since init holds CAP_SYSLOG, and Linux boots with kptr_restrict=0). The
+    // address visibility through the saved fd (more specifically, the backing
+    // open file description) will then be remembered by the kernel for the rest
+    // of its lifetime, even after we raise the kptr_restrict.
+    Service::OpenAndSaveStaticKallsymsFd();
+
     am.QueueBuiltinAction(SetupCgroupsAction, "SetupCgroups");
     am.QueueBuiltinAction(SetKptrRestrictAction, "SetKptrRestrict");
     am.QueueBuiltinAction(TestPerfEventSelinuxAction, "TestPerfEventSelinux");
@@ -1063,6 +1117,7 @@ int SecondStageMain(int argc, char** argv) {
 
     // Queue an action that waits for coldboot done so we know ueventd has set up all of /dev...
     am.QueueBuiltinAction(wait_for_coldboot_done_action, "wait_for_coldboot_done");
+    am.QueueBuiltinAction(CheckTradeInModeStatus, "CheckTradeInModeStatus");
     // ... so that we can start queuing up actions that require stuff from /dev.
     am.QueueBuiltinAction(SetMmapRndBitsAction, "SetMmapRndBits");
     Keychords keychords;

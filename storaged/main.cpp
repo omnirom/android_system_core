@@ -25,13 +25,12 @@
 #include <sys/types.h>
 #include <vector>
 
-#include <android-base/macros.h>
 #include <android-base/logging.h>
+#include <android-base/macros.h>
 #include <android-base/stringprintf.h>
-#include <binder/ProcessState.h>
-#include <binder/IServiceManager.h>
 #include <binder/IPCThreadState.h>
-#include <cutils/android_get_control_file.h>
+#include <binder/IServiceManager.h>
+#include <binder/ProcessState.h>
 #include <cutils/sched_policy.h>
 #include <private/android_filesystem_config.h>
 

@@ -79,16 +79,15 @@ Caveats
   done file by file. Be mindful of wasted space. For example, defining
   **BOARD_IMAGE_PARTITION_RESERVED_SIZE** has a negative impact on the
   right-sizing of images and requires more free dynamic partition space.
-- The kernel requires **CONFIG_OVERLAY_FS=y**. If the kernel version is higher
-  than 4.4, it requires source to be in line with android-common kernels. 
-  The patch series is available on the upstream mailing list and the latest as
-  of Sep 5 2019 is https://www.spinics.net/lists/linux-mtd/msg08331.html
-  This patch adds an override_creds _mount_ option to OverlayFS that
-  permits legacy behavior for systems that do not have overlapping
-  sepolicy rules, principals of least privilege, which is how Android behaves.
-  For 4.19 and higher a rework of the xattr handling to deal with recursion
-  is required. https://patchwork.kernel.org/patch/11117145/ is a start of that
-  adjustment.
+- The kernel requires **CONFIG_OVERLAY_FS=y**. overlayfs is used 'as is' as of
+  android 16, no modifications are required.
+- In order for overlayfs to work, overlays are mounted in the overlay_remounter
+  domain, defined here: system/sepolicy/private/overlay_remounter.te. This domain
+  must have full access to the files on the underlying volumes, add any other file
+  and directory types here
+- For devices with dynamic partitions, we use a simpler logic to decide which
+  partitions to remount, being all logical ones. In case this isn't correct,
+  we added the overlay=on and overlay=off mount flags to allow detailed control.
 - _adb enable-verity_ frees up OverlayFS and reverts the device to the state
   prior to content updates. The update engine performs a full OTA.
 - _adb remount_ overrides are incompatible with OTA resources, so the update

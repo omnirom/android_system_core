@@ -49,6 +49,10 @@
 #include "fs_mgr_overlayfs_mount.h"
 #include "fs_mgr_priv.h"
 
+// Flag to simplify algorithm for choosing which partitions to overlay to simply overlay
+// all dynamic partitions
+constexpr bool overlay_dynamic_partitions_only = true;
+
 using namespace std::literals;
 using namespace android::fs_mgr;
 using namespace android::storage_literals;
@@ -194,9 +198,8 @@ static bool fs_mgr_is_read_only_f2fs(const std::string& dev) {
 
 static bool fs_mgr_overlayfs_enabled(FstabEntry* entry) {
     // readonly filesystem, can not be mount -o remount,rw
-    // for squashfs, erofs or if free space is (near) zero making such a remount
-    // virtually useless, or if there are shared blocks that prevent remount,rw
-    if (!fs_mgr_filesystem_has_space(entry->mount_point)) {
+    // for squashfs, erofs, or if there are shared blocks that prevent remount,rw
+    if (entry->fs_type == "erofs" || entry->fs_type == "squashfs") {
         return true;
     }
 
@@ -670,6 +673,19 @@ Fstab fs_mgr_overlayfs_candidate_list(const Fstab& fstab) {
 
     Fstab candidates;
     for (const auto& entry : fstab) {
+        // fstab overlay flag overrides all other behavior
+        if (entry.fs_mgr_flags.overlay_off) continue;
+        if (entry.fs_mgr_flags.overlay_on) {
+            candidates.push_back(entry);
+            continue;
+        }
+
+        // overlay_dynamic_partitions_only simplifies logic to overlay exactly dynamic partitions
+        if (overlay_dynamic_partitions_only) {
+            if (entry.fs_mgr_flags.logical) candidates.push_back(entry);
+            continue;
+        }
+
         // Filter out partitions whose type doesn't match what's mounted.
         // This avoids spammy behavior on devices which can mount different
         // filesystems for each partition.

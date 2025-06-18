@@ -14,8 +14,8 @@
 
 #pragma once
 
+#include <future>
 #include <string>
-#include <thread>
 
 #include <android-base/unique_fd.h>
 #include "merge_worker.h"

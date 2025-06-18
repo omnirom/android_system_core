@@ -44,6 +44,8 @@
 #include <android-base/strings.h>
 #include <android-base/unique_fd.h>
 
+#include "ashmem-internal.h"
+
 /* ashmem identity */
 static dev_t __ashmem_rdev;
 /*
@@ -76,8 +78,8 @@ static pthread_mutex_t __ashmem_lock = PTHREAD_MUTEX_INITIALIZER;
  * debugging.
  */
 
-static bool debug_log = false;            /* set to true for verbose logging and other debug  */
-static bool pin_deprecation_warn = true; /* Log the pin deprecation warning only once */
+/* set to true for verbose logging and other debug  */
+static bool debug_log = false;
 
 /* Determine if vendor processes would be ok with memfd in the system:
  *
@@ -106,7 +108,7 @@ static bool __has_memfd_support() {
      */
     if (!android::base::GetBoolProperty("sys.use_memfd", false)) {
         if (debug_log) {
-            ALOGD("sys.use_memfd=false so memfd disabled\n");
+            ALOGD("sys.use_memfd=false so memfd disabled");
         }
         return false;
     }
@@ -114,36 +116,43 @@ static bool __has_memfd_support() {
     // Check if kernel support exists, otherwise fall back to ashmem.
     // This code needs to build on old API levels, so we can't use the libc
     // wrapper.
-    //
-    // MFD_NOEXEC_SEAL is used to match the semantics of the ashmem device,
-    // which did not have executable permissions. This also seals the executable
-    // permissions of the buffer (i.e. they cannot be changed by fchmod()).
-    //
-    // MFD_NOEXEC_SEAL implies MFD_ALLOW_SEALING.
     android::base::unique_fd fd(
-            syscall(__NR_memfd_create, "test_android_memfd", MFD_CLOEXEC | MFD_NOEXEC_SEAL));
+            syscall(__NR_memfd_create, "test_android_memfd", MFD_CLOEXEC | MFD_ALLOW_SEALING));
     if (fd == -1) {
-        ALOGE("memfd_create failed: %s, no memfd support.\n", strerror(errno));
+        ALOGE("memfd_create failed: %m, no memfd support");
         return false;
     }
 
     if (fcntl(fd, F_ADD_SEALS, F_SEAL_FUTURE_WRITE) == -1) {
-        ALOGE("fcntl(F_ADD_SEALS) failed: %s, no memfd support.\n", strerror(errno));
+        ALOGE("fcntl(F_ADD_SEALS) failed: %m, no memfd support");
+        return false;
+    }
+
+    size_t buf_size = getpagesize();
+    if (ftruncate(fd, buf_size) == -1) {
+        ALOGE("ftruncate(%zd) failed to set memfd buffer size: %m, no memfd support", buf_size);
+        return false;
+    }
+
+    /*
+     * Ensure that the kernel supports ashmem ioctl commands on memfds. If not,
+     * fall back to using ashmem.
+     */
+    int ashmem_size = TEMP_FAILURE_RETRY(ioctl(fd, ASHMEM_GET_SIZE, 0));
+    if (ashmem_size != static_cast<int>(buf_size)) {
+        ALOGE("ioctl(ASHMEM_GET_SIZE): %d != buf_size: %zd , no ashmem-memfd compat support",
+              ashmem_size, buf_size);
         return false;
     }
 
     if (debug_log) {
-        ALOGD("memfd: device has memfd support, using it\n");
+        ALOGD("memfd: device has memfd support, using it");
     }
     return true;
 }
 
-static bool has_memfd_support() {
-    /* memfd_supported is the initial global per-process state of what is known
-     * about memfd.
-     */
+bool has_memfd_support() {
     static bool memfd_supported = __has_memfd_support();
-
     return memfd_supported;
 }
 
@@ -151,77 +160,56 @@ static std::string get_ashmem_device_path() {
     static const std::string boot_id_path = "/proc/sys/kernel/random/boot_id";
     std::string boot_id;
     if (!android::base::ReadFileToString(boot_id_path, &boot_id)) {
-        ALOGE("Failed to read %s: %s.\n", boot_id_path.c_str(), strerror(errno));
+        ALOGE("Failed to read %s: %m", boot_id_path.c_str());
         return "";
-    };
+    }
     boot_id = android::base::Trim(boot_id);
 
     return "/dev/ashmem" + boot_id;
 }
 
 /* logistics of getting file descriptor for ashmem */
-static int __ashmem_open_locked()
-{
+static int __ashmem_open_locked() {
     static const std::string ashmem_device_path = get_ashmem_device_path();
 
     if (ashmem_device_path.empty()) {
         return -1;
     }
 
-    int fd = TEMP_FAILURE_RETRY(open(ashmem_device_path.c_str(), O_RDWR | O_CLOEXEC));
-
-    // fallback for APEX w/ use_vendor on Q, which would have still used /dev/ashmem
-    if (fd < 0) {
-        int saved_errno = errno;
-        fd = TEMP_FAILURE_RETRY(open("/dev/ashmem", O_RDWR | O_CLOEXEC));
-        if (fd < 0) {
-            /* Q launching devices and newer must not reach here since they should have been
-             * able to open ashmem_device_path */
-            ALOGE("Unable to open ashmem device %s (error = %s) and /dev/ashmem(error = %s)",
-                  ashmem_device_path.c_str(), strerror(saved_errno), strerror(errno));
-            return fd;
-        }
+    android::base::unique_fd fd(TEMP_FAILURE_RETRY(open(ashmem_device_path.c_str(), O_RDWR | O_CLOEXEC)));
+    if (!fd.ok()) {
+        ALOGE("Unable to open ashmem device: %m");
+        return -1;
     }
+
     struct stat st;
-    int ret = TEMP_FAILURE_RETRY(fstat(fd, &st));
-    if (ret < 0) {
-        int save_errno = errno;
-        close(fd);
-        errno = save_errno;
-        return ret;
+    if (TEMP_FAILURE_RETRY(fstat(fd, &st)) == -1) {
+        return -1;
     }
     if (!S_ISCHR(st.st_mode) || !st.st_rdev) {
-        close(fd);
         errno = ENOTTY;
         return -1;
     }
 
     __ashmem_rdev = st.st_rdev;
-    return fd;
+    return fd.release();
 }
 
-static int __ashmem_open()
-{
-    int fd;
-
+static int __ashmem_open() {
     pthread_mutex_lock(&__ashmem_lock);
-    fd = __ashmem_open_locked();
+    int fd = __ashmem_open_locked();
     pthread_mutex_unlock(&__ashmem_lock);
-
     return fd;
 }
 
 /* Make sure file descriptor references ashmem, negative number means false */
-static int __ashmem_is_ashmem(int fd, int fatal)
-{
-    dev_t rdev;
+static int __ashmem_is_ashmem(int fd, bool fatal) {
     struct stat st;
-
     if (fstat(fd, &st) < 0) {
         return -1;
     }
 
-    rdev = 0; /* Too much complexity to sniff __ashmem_rdev */
+    dev_t rdev = 0; /* Too much complexity to sniff __ashmem_rdev */
     if (S_ISCHR(st.st_mode) && st.st_rdev) {
         pthread_mutex_lock(&__ashmem_lock);
         rdev = __ashmem_rdev;
@@ -262,18 +250,17 @@ static int __ashmem_is_ashmem(int fd, int fatal)
     return -1;
 }
 
-static int __ashmem_check_failure(int fd, int result)
-{
-    if (result == -1 && errno == ENOTTY) __ashmem_is_ashmem(fd, 1);
+static int __ashmem_check_failure(int fd, int result) {
+    if (result == -1 && errno == ENOTTY) __ashmem_is_ashmem(fd, true);
     return result;
 }
 
-static bool memfd_is_ashmem(int fd) {
+static bool is_ashmem_fd(int fd) {
     static bool fd_check_error_once = false;
 
-    if (__ashmem_is_ashmem(fd, 0) == 0) {
+    if (__ashmem_is_ashmem(fd, false) == 0) {
         if (!fd_check_error_once) {
-            ALOGE("memfd: memfd expected but ashmem fd used - please use libcutils.\n");
+            ALOGE("memfd: memfd expected but ashmem fd used - please use libcutils");
             fd_check_error_once = true;
         }
 
@@ -283,33 +270,30 @@ static bool memfd_is_ashmem(int fd) {
     return false;
 }
 
-int ashmem_valid(int fd)
-{
-    if (has_memfd_support() && !memfd_is_ashmem(fd)) {
+static bool is_memfd_fd(int fd) {
+    return has_memfd_support() && !is_ashmem_fd(fd);
+}
+
+int ashmem_valid(int fd) {
+    if (is_memfd_fd(fd)) {
         return 1;
     }
 
-    return __ashmem_is_ashmem(fd, 0) >= 0;
+    return __ashmem_is_ashmem(fd, false) >= 0;
 }
 
 static int memfd_create_region(const char* name, size_t size) {
     // This code needs to build on old API levels, so we can't use the libc
     // wrapper.
-    //
-    // MFD_NOEXEC_SEAL to match the semantics of the ashmem device, which did
-    // not have executable permissions. This also seals the executable
-    // permissions of the buffer (i.e. they cannot be changed by fchmod()).
-    //
-    // MFD_NOEXEC_SEAL implies MFD_ALLOW_SEALING.
-    android::base::unique_fd fd(syscall(__NR_memfd_create, name, MFD_CLOEXEC | MFD_NOEXEC_SEAL));
+    android::base::unique_fd fd(syscall(__NR_memfd_create, name, MFD_CLOEXEC | MFD_ALLOW_SEALING));
 
     if (fd == -1) {
-        ALOGE("memfd_create(%s, %zd) failed: %s\n", name, size, strerror(errno));
+        ALOGE("memfd_create(%s, %zd) failed: %m", name, size);
         return -1;
     }
 
     if (ftruncate(fd, size) == -1) {
-        ALOGE("ftruncate(%s, %zd) failed for memfd creation: %s\n", name, size, strerror(errno));
+        ALOGE("ftruncate(%s, %zd) failed for memfd creation: %m", name, size);
         return -1;
     }
 
@@ -320,7 +304,7 @@ static int memfd_create_region(const char* name, size_t size) {
     }
 
     if (debug_log) {
-        ALOGE("memfd_create(%s, %zd) success. fd=%d\n", name, size, fd.get());
+        ALOGE("memfd_create(%s, %zd) success. fd=%d", name, size, fd.get());
     }
     return fd.release();
 }
@@ -332,47 +316,26 @@ static int memfd_create_region(const char* name, size_t size) {
  * `name' is an optional label to give the region (visible in /proc/pid/maps)
  * `size' is the size of the region, in page-aligned bytes
  */
-int ashmem_create_region(const char *name, size_t size)
-{
-    int ret, save_errno;
+int ashmem_create_region(const char* name, size_t size) {
+    if (name == NULL) name = "none";
 
     if (has_memfd_support()) {
-        return memfd_create_region(name ? name : "none", size);
+        return memfd_create_region(name, size);
     }
 
-    int fd = __ashmem_open();
-    if (fd < 0) {
-        return fd;
+    android::base::unique_fd fd(__ashmem_open());
+    if (!fd.ok() ||
+        TEMP_FAILURE_RETRY(ioctl(fd, ASHMEM_SET_NAME, name) < 0) ||
+        TEMP_FAILURE_RETRY(ioctl(fd, ASHMEM_SET_SIZE, size) < 0)) {
+        return -1;
     }
-
-    if (name) {
-        char buf[ASHMEM_NAME_LEN] = {0};
-
-        strlcpy(buf, name, sizeof(buf));
-        ret = TEMP_FAILURE_RETRY(ioctl(fd, ASHMEM_SET_NAME, buf));
-        if (ret < 0) {
-            goto error;
-        }
-    }
-
-    ret = TEMP_FAILURE_RETRY(ioctl(fd, ASHMEM_SET_SIZE, size));
-    if (ret < 0) {
-        goto error;
-    }
-
-    return fd;
-
-error:
-    save_errno = errno;
-    close(fd);
-    errno = save_errno;
-    return ret;
+    return fd.release();
 }
 
 static int memfd_set_prot_region(int fd, int prot) {
     int seals = fcntl(fd, F_GET_SEALS);
     if (seals == -1) {
-        ALOGE("memfd_set_prot_region(%d, %d): F_GET_SEALS failed: %s\n", fd, prot, strerror(errno));
+        ALOGE("memfd_set_prot_region(%d, %d): F_GET_SEALS failed: %m", fd, prot);
         return -1;
     }
 
@@ -381,7 +344,7 @@ static int memfd_set_prot_region(int fd, int prot) {
          * has been previously marked as read-only before, if so return error
          */
         if (seals & F_SEAL_FUTURE_WRITE) {
-            ALOGE("memfd_set_prot_region(%d, %d): region is write protected\n", fd, prot);
+            ALOGE("memfd_set_prot_region(%d, %d): region is write protected", fd, prot);
             errno = EINVAL;  // inline with ashmem error code, if already in
                              // read-only mode
             return -1;
@@ -390,70 +353,53 @@ static int memfd_set_prot_region(int fd, int prot) {
     }
 
     /* We would only allow read-only for any future file operations */
-    if (fcntl(fd, F_ADD_SEALS, F_SEAL_FUTURE_WRITE | F_SEAL_SEAL) == -1) {
-        ALOGE("memfd_set_prot_region(%d, %d): F_SEAL_FUTURE_WRITE | F_SEAL_SEAL seal failed: %s\n",
-              fd, prot, strerror(errno));
+    if (fcntl(fd, F_ADD_SEALS, F_SEAL_FUTURE_WRITE) == -1) {
+        ALOGE("memfd_set_prot_region(%d, %d): F_SEAL_FUTURE_WRITE seal failed: %m", fd, prot);
         return -1;
     }
 
     return 0;
 }
 
-int ashmem_set_prot_region(int fd, int prot)
-{
-    if (has_memfd_support() && !memfd_is_ashmem(fd)) {
+int ashmem_set_prot_region(int fd, int prot) {
+    if (is_memfd_fd(fd)) {
         return memfd_set_prot_region(fd, prot);
     }
 
     return __ashmem_check_failure(fd, TEMP_FAILURE_RETRY(ioctl(fd, ASHMEM_SET_PROT_MASK, prot)));
 }
 
-int ashmem_pin_region(int fd, size_t offset, size_t len)
-{
-    if (!pin_deprecation_warn || debug_log) {
-        ALOGE("Pinning is deprecated since Android Q. Please use trim or other methods.\n");
-        pin_deprecation_warn = true;
+static int do_pin(int op, int fd, size_t offset, size_t length) {
+    static bool already_warned_about_pin_deprecation = false;
+    if (!already_warned_about_pin_deprecation || debug_log) {
+        ALOGE("Pinning is deprecated since Android Q. Please use trim or other methods.");
+        already_warned_about_pin_deprecation = true;
     }
 
-    if (has_memfd_support() && !memfd_is_ashmem(fd)) {
+    if (is_memfd_fd(fd)) {
         return 0;
     }
 
     // TODO: should LP64 reject too-large offset/len?
-    ashmem_pin pin = { static_cast<uint32_t>(offset), static_cast<uint32_t>(len) };
-    return __ashmem_check_failure(fd, TEMP_FAILURE_RETRY(ioctl(fd, ASHMEM_PIN, &pin)));
+    ashmem_pin pin = { static_cast<uint32_t>(offset), static_cast<uint32_t>(length) };
+    return __ashmem_check_failure(fd, TEMP_FAILURE_RETRY(ioctl(fd, op, &pin)));
 }
 
-int ashmem_unpin_region(int fd, size_t offset, size_t len)
-{
-    if (!pin_deprecation_warn || debug_log) {
-        ALOGE("Pinning is deprecated since Android Q. Please use trim or other methods.\n");
-        pin_deprecation_warn = true;
-    }
-
-    if (has_memfd_support() && !memfd_is_ashmem(fd)) {
-        return 0;
-    }
-
-    // TODO: should LP64 reject too-large offset/len?
-    ashmem_pin pin = { static_cast<uint32_t>(offset), static_cast<uint32_t>(len) };
-    return __ashmem_check_failure(fd, TEMP_FAILURE_RETRY(ioctl(fd, ASHMEM_UNPIN, &pin)));
+int ashmem_pin_region(int fd, size_t offset, size_t length) {
+    return do_pin(ASHMEM_PIN, fd, offset, length);
 }
 
-int ashmem_get_size_region(int fd)
-{
-    if (has_memfd_support() && !memfd_is_ashmem(fd)) {
+int ashmem_unpin_region(int fd, size_t offset, size_t length) {
+    return do_pin(ASHMEM_UNPIN, fd, offset, length);
+}
+
+int ashmem_get_size_region(int fd) {
+    if (is_memfd_fd(fd)) {
         struct stat sb;
-
         if (fstat(fd, &sb) == -1) {
-            ALOGE("ashmem_get_size_region(%d): fstat failed: %s\n", fd, strerror(errno));
+            ALOGE("ashmem_get_size_region(%d): fstat failed: %m", fd);
             return -1;
         }
-
-        if (debug_log) {
-            ALOGD("ashmem_get_size_region(%d): %d\n", fd, static_cast<int>(sb.st_size));
-        }
-
         return sb.st_size;
     }
 

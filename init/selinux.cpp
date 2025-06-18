@@ -56,6 +56,7 @@
 #include <linux/audit.h>
 #include <linux/netlink.h>
 #include <stdlib.h>
+#include <sys/mount.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -69,6 +70,7 @@
 #include <android/avf_cc_flags.h>
 #include <fs_avb/fs_avb.h>
 #include <fs_mgr.h>
+#include <fs_mgr_overlayfs.h>
 #include <genfslabelsversion.h>
 #include <libgsi/libgsi.h>
 #include <libsnapshot/snapshot.h>
@@ -77,6 +79,7 @@
 #include "block_dev_initializer.h"
 #include "debug_ramdisk.h"
 #include "reboot_utils.h"
+#include "second_stage_resources.h"
 #include "snapuserd_transition.h"
 #include "util.h"
 
@@ -698,6 +701,75 @@ void LoadSelinuxPolicyAndroid() {
     }
 }
 
+#ifdef ALLOW_REMOUNT_OVERLAYS
+bool EarlySetupOverlays() {
+    if (android::fs_mgr::use_override_creds) return false;
+
+    bool has_overlays = false;
+    std::string contents;
+    auto result = android::base::ReadFileToString("/proc/mounts", &contents, true);
+
+    auto lines = android::base::Split(contents, "\n");
+    for (auto const& line : lines)
+        if (android::base::StartsWith(line, "overlay")) {
+            has_overlays = true;
+            break;
+        }
+
+    if (!has_overlays) return false;
+    if (mount("tmpfs", kSecondStageRes, "tmpfs", MS_REMOUNT | MS_NOSUID | MS_NODEV,
+              "mode=0755,uid=0,gid=0") == -1) {
+        PLOG(FATAL) << "Failed to remount tmpfs on " << kSecondStageRes << " to remove NO_EXEC";
+    }
+
+    return true;
+}
+
+void SetupOverlays() {
+    // After adb remount, we mount all r/o volumes with overlayfs to allow writing.
+    // However, since overlayfs performs its file operations in the context of the
+    // mounting process, this will not work as is - init is in the kernel domain in
+    // first stage, which has very limited permissions.
+
+    // In order to fix this, we need to unmount remount all these volumes from a process
+    // with sufficient privileges to be able to perform these operations. The
+    // overlay_remounter domain has those privileges on debuggable devices.
+    // We will call overlay_remounter which will do the unmounts/mounts.
+    // But for that to work, the volumes must not be busy, so we need to copy
+    // overlay_remounter from system to a ramdisk and run it from there.
+    const char* kOverlayRemounter = "overlay_remounter";
+    auto or_src = std::filesystem::path("/system/xbin/") / kOverlayRemounter;
+    auto or_dest = std::filesystem::path(kSecondStageRes) / kOverlayRemounter;
+    std::error_code ec;
+    std::filesystem::copy(or_src, or_dest, ec);
+    if (ec) {
+        LOG(FATAL) << "Failed to copy " << or_src << " to " << or_dest << " " << ec.message();
+    }
+
+    if (selinux_android_restorecon(or_dest.c_str(), 0) == -1) {
+        PLOG(FATAL) << "restorecon of " << or_dest << " failed";
+    }
+    auto dest = unique_fd(open(or_dest.c_str(), O_RDONLY | O_CLOEXEC));
+    if (dest.get() == -1) {
+        PLOG(FATAL) << "Failed to reopen " << or_dest;
+    }
+    if (unlink(or_dest.c_str()) == -1) {
+        PLOG(FATAL) << "Failed to unlink " << or_dest;
+    }
+    const char* args[] = {or_dest.c_str(), nullptr};
+    fexecve(dest.get(), const_cast<char**>(args), environ);
+
+    // execv() only returns if an error happened, in which case we
+    // panic and never return from this function.
+    PLOG(FATAL) << "execv(\"" << or_dest << "\") failed";
+}
+#else
+bool EarlySetupOverlays() {
+    return false;
+}
+void SetupOverlays() {}
+#endif
+
 int SetupSelinux(char** argv) {
     SetStdioToDevNull(argv);
     InitKernelLogging(argv);
@@ -709,6 +781,9 @@ int SetupSelinux(char** argv) {
     boot_clock::time_point start_time = boot_clock::now();
 
     SelinuxSetupKernelLogging();
+
+    // Test to see if we should use overlays, and if so remount tmpfs before selinux will block
+    bool use_overlays = EarlySetupOverlays();
 
     // TODO(b/287206497): refactor into different headers to only include what we need.
     if (IsMicrodroid()) {
@@ -737,6 +812,10 @@ int SetupSelinux(char** argv) {
     }
 
     setenv(kEnvSelinuxStartedAt, std::to_string(start_time.time_since_epoch().count()).c_str(), 1);
+
+    // SetupOverlays does not return if overlays exist, instead it execs overlay_remounter
+    // which then execs second stage init
+    if (use_overlays) SetupOverlays();
 
     const char* path = "/system/bin/init";
     const char* args[] = {path, "second_stage", nullptr};

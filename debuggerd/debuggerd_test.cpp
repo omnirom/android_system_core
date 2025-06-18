@@ -335,7 +335,7 @@ TEST_F(CrasherTest, smoke) {
   ConsumeFd(std::move(output_fd), &result);
   ASSERT_MATCH(result, R"(signal 11 \(SIGSEGV\), code 1 \(SEGV_MAPERR\), fault addr 0x0+dead)");
 
-  if (mte_supported()) {
+  if (mte_supported() && mte_enabled()) {
     // Test that the default TAGGED_ADDR_CTRL value is set.
     ASSERT_MATCH(result, R"(tagged_addr_ctrl: 000000000007fff3)"
                          R"( \(PR_TAGGED_ADDR_ENABLE, PR_MTE_TCF_SYNC, mask 0xfffe\))");
@@ -443,7 +443,7 @@ INSTANTIATE_TEST_SUITE_P(Sizes, SizeParamCrasherTest, testing::Values(0, 16, 131
 
 TEST_P(SizeParamCrasherTest, mte_uaf) {
 #if defined(__aarch64__)
-  if (!mte_supported()) {
+  if (!mte_supported() || !mte_enabled()) {
     GTEST_SKIP() << "Requires MTE";
   }
 
@@ -490,7 +490,7 @@ TEST_P(SizeParamCrasherTest, mte_uaf) {
 
 TEST_P(SizeParamCrasherTest, mte_oob_uaf) {
 #if defined(__aarch64__)
-  if (!mte_supported()) {
+  if (!mte_supported() || !mte_enabled()) {
     GTEST_SKIP() << "Requires MTE";
   }
 
@@ -522,7 +522,7 @@ TEST_P(SizeParamCrasherTest, mte_oob_uaf) {
 
 TEST_P(SizeParamCrasherTest, mte_overflow) {
 #if defined(__aarch64__)
-  if (!mte_supported()) {
+  if (!mte_supported() || !mte_enabled()) {
     GTEST_SKIP() << "Requires MTE";
   }
 
@@ -565,7 +565,7 @@ TEST_P(SizeParamCrasherTest, mte_overflow) {
 
 TEST_P(SizeParamCrasherTest, mte_underflow) {
 #if defined(__aarch64__)
-  if (!mte_supported()) {
+  if (!mte_supported() || !mte_enabled()) {
     GTEST_SKIP() << "Requires MTE";
   }
 
@@ -614,7 +614,7 @@ TEST_F(CrasherTest, DISABLED_mte_illegal_setjmp) {
   //     unsubtle chaos is sure to result.
   // https://man7.org/linux/man-pages/man3/longjmp.3.html
 #if defined(__aarch64__)
-  if (!mte_supported()) {
+  if (!mte_supported() || !mte_enabled()) {
     GTEST_SKIP() << "Requires MTE";
   }
 
@@ -648,7 +648,7 @@ TEST_F(CrasherTest, DISABLED_mte_illegal_setjmp) {
 
 TEST_F(CrasherTest, mte_async) {
 #if defined(__aarch64__)
-  if (!mte_supported()) {
+  if (!mte_supported() || !mte_enabled()) {
     GTEST_SKIP() << "Requires MTE";
   }
 
@@ -678,7 +678,7 @@ TEST_F(CrasherTest, mte_async) {
 
 TEST_F(CrasherTest, mte_multiple_causes) {
 #if defined(__aarch64__)
-  if (!mte_supported()) {
+  if (!mte_supported() || !mte_enabled()) {
     GTEST_SKIP() << "Requires MTE";
   }
 
@@ -764,7 +764,7 @@ static uintptr_t CreateTagMapping() {
 
 TEST_F(CrasherTest, mte_register_tag_dump) {
 #if defined(__aarch64__)
-  if (!mte_supported()) {
+  if (!mte_supported() || !mte_enabled()) {
     GTEST_SKIP() << "Requires MTE";
   }
 
@@ -797,7 +797,7 @@ TEST_F(CrasherTest, mte_register_tag_dump) {
 
 TEST_F(CrasherTest, mte_fault_tag_dump_front_truncated) {
 #if defined(__aarch64__)
-  if (!mte_supported()) {
+  if (!mte_supported() || !mte_enabled()) {
     GTEST_SKIP() << "Requires MTE";
   }
 
@@ -828,7 +828,7 @@ TEST_F(CrasherTest, mte_fault_tag_dump_front_truncated) {
 
 TEST_F(CrasherTest, mte_fault_tag_dump) {
 #if defined(__aarch64__)
-  if (!mte_supported()) {
+  if (!mte_supported() || !mte_enabled()) {
     GTEST_SKIP() << "Requires MTE";
   }
 
@@ -862,7 +862,7 @@ TEST_F(CrasherTest, mte_fault_tag_dump) {
 
 TEST_F(CrasherTest, mte_fault_tag_dump_rear_truncated) {
 #if defined(__aarch64__)
-  if (!mte_supported()) {
+  if (!mte_supported() || !mte_enabled()) {
     GTEST_SKIP() << "Requires MTE";
   }
 
@@ -2788,6 +2788,10 @@ TEST_F(CrasherTest, fault_address_between_maps) {
   void* start_ptr =
       mmap(nullptr, 3 * getpagesize(), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
   ASSERT_NE(MAP_FAILED, start_ptr);
+  // Add a name to guarantee that this map is distinct and not combined in the map listing.
+  EXPECT_EQ(
+      prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, start_ptr, 3 * getpagesize(), "debuggerd map start"),
+      0);
   // Unmap the page in the middle.
   void* middle_ptr =
       reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(start_ptr) + getpagesize());
@@ -2834,6 +2838,8 @@ TEST_F(CrasherTest, fault_address_in_map) {
   // Create a map before the fork so it will be present in the child.
   void* ptr = mmap(nullptr, getpagesize(), 0, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
   ASSERT_NE(MAP_FAILED, ptr);
+  // Add a name to guarantee that this map is distinct and not combined in the map listing.
+  EXPECT_EQ(prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, ptr, getpagesize(), "debuggerd map"), 0);
 
   StartProcess([ptr]() {
     ASSERT_EQ(0, crash_call(reinterpret_cast<uintptr_t>(ptr)));
@@ -2905,7 +2911,7 @@ TEST_F(CrasherTest, verify_dex_pc_with_function_name) {
         mmap(nullptr, sizeof(kDexData), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
     ASSERT_TRUE(ptr != MAP_FAILED);
     memcpy(ptr, kDexData, sizeof(kDexData));
-    prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, ptr, sizeof(kDexData), "dex");
+    EXPECT_EQ(prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, ptr, sizeof(kDexData), "dex"), 0);
 
     JITCodeEntry dex_entry = {.symfile_addr = reinterpret_cast<uintptr_t>(ptr),
                               .symfile_size = sizeof(kDexData)};
@@ -3006,12 +3012,18 @@ TEST_F(CrasherTest, verify_map_format) {
   // Create multiple maps to make sure that the map data is formatted properly.
   void* none_map = mmap(nullptr, getpagesize(), 0, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
   ASSERT_NE(MAP_FAILED, none_map);
+  // Add names to guarantee that the maps are distinct and not combined in the map listing.
+  EXPECT_EQ(prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, none_map, getpagesize(), "debuggerd map none"),
+            0);
   void* r_map = mmap(nullptr, getpagesize(), PROT_READ, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
   ASSERT_NE(MAP_FAILED, r_map);
+  EXPECT_EQ(prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, r_map, getpagesize(), "debuggerd map r"), 0);
   void* w_map = mmap(nullptr, getpagesize(), PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+  EXPECT_EQ(prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, w_map, getpagesize(), "debuggerd map w"), 0);
   ASSERT_NE(MAP_FAILED, w_map);
   void* x_map = mmap(nullptr, getpagesize(), PROT_EXEC, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
   ASSERT_NE(MAP_FAILED, x_map);
+  EXPECT_EQ(prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, x_map, getpagesize(), "debuggerd map x"), 0);
 
   TemporaryFile tf;
   ASSERT_EQ(0x2000, lseek(tf.fd, 0x2000, SEEK_SET));
@@ -3046,7 +3058,7 @@ TEST_F(CrasherTest, verify_map_format) {
   std::string match_str;
   // Verify none.
   match_str = android::base::StringPrintf(
-      "    %s-%s ---         0      %x\\n",
+      "    %s-%s ---         0      %x  \\[anon:debuggerd map none\\]\\n",
       format_map_pointer(reinterpret_cast<uintptr_t>(none_map)).c_str(),
       format_map_pointer(reinterpret_cast<uintptr_t>(none_map) + getpagesize() - 1).c_str(),
       getpagesize());
@@ -3054,7 +3066,7 @@ TEST_F(CrasherTest, verify_map_format) {
 
   // Verify read-only.
   match_str = android::base::StringPrintf(
-      "    %s-%s r--         0      %x\\n",
+      "    %s-%s r--         0      %x  \\[anon:debuggerd map r\\]\\n",
       format_map_pointer(reinterpret_cast<uintptr_t>(r_map)).c_str(),
       format_map_pointer(reinterpret_cast<uintptr_t>(r_map) + getpagesize() - 1).c_str(),
       getpagesize());
@@ -3062,7 +3074,7 @@ TEST_F(CrasherTest, verify_map_format) {
 
   // Verify write-only.
   match_str = android::base::StringPrintf(
-      "    %s-%s -w-         0      %x\\n",
+      "    %s-%s -w-         0      %x  \\[anon:debuggerd map w\\]\\n",
       format_map_pointer(reinterpret_cast<uintptr_t>(w_map)).c_str(),
       format_map_pointer(reinterpret_cast<uintptr_t>(w_map) + getpagesize() - 1).c_str(),
       getpagesize());
@@ -3070,7 +3082,7 @@ TEST_F(CrasherTest, verify_map_format) {
 
   // Verify exec-only.
   match_str = android::base::StringPrintf(
-      "    %s-%s --x         0      %x\\n",
+      "    %s-%s --x         0      %x  \\[anon:debuggerd map x\\]\\n",
       format_map_pointer(reinterpret_cast<uintptr_t>(x_map)).c_str(),
       format_map_pointer(reinterpret_cast<uintptr_t>(x_map) + getpagesize() - 1).c_str(),
       getpagesize());
@@ -3303,8 +3315,44 @@ TEST_F(CrasherTest, log_with_newline) {
   ASSERT_MATCH(result, ":\\s*This is on the next line.");
 }
 
-TEST_F(CrasherTest, log_with_non_utf8) {
-  StartProcess([]() { LOG(FATAL) << "Invalid UTF-8: \xA0\xB0\xC0\xD0 and some other data."; });
+TEST_F(CrasherTest, log_with_non_printable_ascii_verify_encoded) {
+  static const std::string kEncodedStr =
+      "\x5C\x31"
+      "\x5C\x32"
+      "\x5C\x33"
+      "\x5C\x34"
+      "\x5C\x35"
+      "\x5C\x36"
+      "\x5C\x37"
+      "\x5C\x31\x30"
+      "\x5C\x31\x36"
+      "\x5C\x31\x37"
+      "\x5C\x32\x30"
+      "\x5C\x32\x31"
+      "\x5C\x32\x32"
+      "\x5C\x32\x33"
+      "\x5C\x32\x34"
+      "\x5C\x32\x35"
+      "\x5C\x32\x36"
+      "\x5C\x32\x37"
+      "\x5C\x33\x30"
+      "\x5C\x33\x31"
+      "\x5C\x33\x32"
+      "\x5C\x33\x33"
+      "\x5C\x33\x34"
+      "\x5C\x33\x35"
+      "\x5C\x33\x36"
+      "\x5C\x33\x37"
+      "\x5C\x31\x37\x37"
+      "\x5C\x32\x34\x30"
+      "\x5C\x32\x36\x30"
+      "\x5C\x33\x30\x30"
+      "\x5C\x33\x32\x30";
+  StartProcess([]() {
+    LOG(FATAL) << "Encoded: "
+                  "\x1\x2\x3\x4\x5\x6\x7\x8\xe\xf\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b"
+                  "\x1c\x1d\x1e\x1f\x7f\xA0\xB0\xC0\xD0 after";
+  });
 
   unique_fd output_fd;
   StartIntercept(&output_fd);
@@ -3317,15 +3365,38 @@ TEST_F(CrasherTest, log_with_non_utf8) {
   std::string result;
   ConsumeFd(std::move(output_fd), &result);
   // Verify the abort message is sanitized properly.
-  size_t pos = result.find(
-      "Abort message: 'Invalid UTF-8: "
-      "\x5C\x32\x34\x30\x5C\x32\x36\x30\x5C\x33\x30\x30\x5C\x33\x32\x30 and some other data.'");
+  size_t pos = result.find(std::string("Abort message: 'Encoded: ") + kEncodedStr + " after'");
   EXPECT_TRUE(pos != std::string::npos) << "Couldn't find sanitized abort message: " << result;
 
   // Make sure that the log message is sanitized properly too.
-  EXPECT_TRUE(
-      result.find("Invalid UTF-8: \x5C\x32\x34\x30\x5C\x32\x36\x30\x5C\x33\x30\x30\x5C\x33\x32\x30 "
-                  "and some other data.",
-                  pos + 30) != std::string::npos)
+  EXPECT_TRUE(result.find(std::string("Encoded: ") + kEncodedStr + " after", pos + 1) !=
+              std::string::npos)
+      << "Couldn't find sanitized log message: " << result;
+}
+
+TEST_F(CrasherTest, log_with_with_special_printable_ascii) {
+  static const std::string kMsg = "Not encoded: \t\v\f\r\n after";
+  StartProcess([]() { LOG(FATAL) << kMsg; });
+
+  unique_fd output_fd;
+  StartIntercept(&output_fd);
+  FinishCrasher();
+  AssertDeath(SIGABRT);
+  int intercept_result;
+  FinishIntercept(&intercept_result);
+  ASSERT_EQ(1, intercept_result) << "tombstoned reported failure";
+
+  std::string result;
+  ConsumeFd(std::move(output_fd), &result);
+  // Verify the abort message does not remove characters that are UTF8 but
+  // are, technically, not printable.
+  size_t pos = result.find(std::string("Abort message: '") + kMsg + "'");
+  EXPECT_TRUE(pos != std::string::npos) << "Couldn't find abort message: " << result;
+
+  // Make sure that the log message is handled properly too.
+  // The logger automatically splits a newline message into two pieces.
+  pos = result.find("Not encoded: \t\v\f\r", pos + kMsg.size());
+  EXPECT_TRUE(pos != std::string::npos) << "Couldn't find log message: " << result;
+  EXPECT_TRUE(result.find(" after", pos + 1) != std::string::npos)
       << "Couldn't find sanitized log message: " << result;
 }

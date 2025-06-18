@@ -24,15 +24,11 @@
 
 #include <condition_variable>
 #include <cstring>
-#include <future>
 #include <iostream>
-#include <limits>
 #include <mutex>
 #include <ostream>
 #include <string>
-#include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include <android-base/file.h>
@@ -48,6 +44,7 @@
 #include <snapuserd/snapuserd_kernel.h>
 #include <storage_literals/storage_literals.h>
 #include <system/thread_defs.h>
+#include <user-space-merge/handler_manager.h>
 #include "snapuserd_readahead.h"
 #include "snapuserd_verify.h"
 
@@ -104,8 +101,7 @@ class SnapshotHandler : public std::enable_shared_from_this<SnapshotHandler> {
   public:
     SnapshotHandler(std::string misc_name, std::string cow_device, std::string backing_device,
                     std::string base_path_merge, std::shared_ptr<IBlockServerOpener> opener,
-                    int num_workers, bool use_iouring, bool perform_verification, bool o_direct,
-                    uint32_t cow_op_merge_size);
+                    HandlerOptions options);
     bool InitCowDevice();
     bool Start();
 
@@ -175,6 +171,9 @@ class SnapshotHandler : public std::enable_shared_from_this<SnapshotHandler> {
     bool MergeInitiated() { return merge_initiated_; }
     bool MergeMonitored() { return merge_monitored_; }
     double GetMergePercentage() { return merge_completion_percentage_; }
+    void PauseMergeThreads();
+    void ResumeMergeThreads();
+    void PauseMergeIfRequired();
 
     // Merge Block State Transitions
     void SetMergeCompleted(size_t block_index);
@@ -245,16 +244,19 @@ class SnapshotHandler : public std::enable_shared_from_this<SnapshotHandler> {
     bool merge_initiated_ = false;
     bool merge_monitored_ = false;
     bool attached_ = false;
-    bool is_io_uring_enabled_ = false;
     bool scratch_space_ = false;
     int num_worker_threads_ = kNumWorkerThreads;
     bool perform_verification_ = true;
     bool resume_merge_ = false;
     bool merge_complete_ = false;
-    bool o_direct_ = false;
-    uint32_t cow_op_merge_size_ = 0;
+    HandlerOptions handler_options_;
     std::unique_ptr<UpdateVerify> update_verify_;
     std::shared_ptr<IBlockServerOpener> block_server_opener_;
+
+    // Pause merge threads
+    bool pause_merge_ = false;
+    std::mutex pause_merge_lock_;
+    std::condition_variable pause_merge_cv_;
 };
 
 std::ostream& operator<<(std::ostream& os, MERGE_IO_TRANSITION value);

@@ -191,14 +191,18 @@ static std::string GetSourceDeviceName(const std::string& partition_name) {
 }
 
 bool SnapshotManager::BeginUpdate() {
-    bool needs_merge = false;
-    if (!TryCancelUpdate(&needs_merge)) {
-        return false;
-    }
-    if (needs_merge) {
-        LOG(INFO) << "Wait for merge (if any) before beginning a new update.";
-        auto state = ProcessUpdateState();
-        LOG(INFO) << "Merged with state = " << state;
+    switch (TryCancelUpdate()) {
+        case CancelResult::OK:
+            break;
+        case CancelResult::NEEDS_MERGE: {
+            LOG(INFO) << "Wait for merge (if any) before beginning a new update.";
+            auto state = ProcessUpdateState();
+            LOG(INFO) << "Merged with end state: " << state;
+            break;
+        }
+        default:
+            LOG(ERROR) << "Cannot begin update, existing update cannot be cancelled.";
+            return false;
     }
 
     auto file = LockExclusive();
@@ -223,49 +227,82 @@ bool SnapshotManager::BeginUpdate() {
 }
 
 bool SnapshotManager::CancelUpdate() {
-    bool needs_merge = false;
-    if (!TryCancelUpdate(&needs_merge)) {
-        return false;
-    }
-    if (needs_merge) {
-        LOG(ERROR) << "Cannot cancel update after it has completed or started merging";
-    }
-    return !needs_merge;
+    return TryCancelUpdate() == CancelResult::OK;
 }
 
-bool SnapshotManager::TryCancelUpdate(bool* needs_merge) {
-    *needs_merge = false;
+CancelResult SnapshotManager::TryCancelUpdate() {
+    auto lock = LockExclusive();
+    if (!lock) return CancelResult::ERROR;
 
-    auto file = LockExclusive();
-    if (!file) return false;
+    UpdateState state = ReadUpdateState(lock.get());
+    CancelResult result = IsCancelUpdateSafe(state);
 
-    if (IsSnapshotWithoutSlotSwitch()) {
-        LOG(ERROR) << "Cannot cancel the snapshots as partitions are mounted off the snapshots on "
-                      "current slot.";
-        return false;
+    if (result != CancelResult::OK && device_->IsRecovery()) {
+        LOG(ERROR) << "Cancel result " << result << " will be overridden in recovery.";
+        result = CancelResult::OK;
     }
 
-    UpdateState state = ReadUpdateState(file.get());
-    if (state == UpdateState::None) {
-        RemoveInvalidSnapshots(file.get());
+    switch (result) {
+        case CancelResult::OK:
+            LOG(INFO) << "Cancelling update from state: " << state;
+            RemoveAllUpdateState(lock.get());
+            RemoveInvalidSnapshots(lock.get());
+            break;
+        case CancelResult::NEEDS_MERGE:
+            LOG(ERROR) << "Cannot cancel an update while a merge is in progress.";
+            break;
+        case CancelResult::LIVE_SNAPSHOTS:
+            LOG(ERROR) << "Cannot cancel an update while snapshots are live.";
+            break;
+        case CancelResult::ERROR:
+            // Error was already reported.
+            break;
+    }
+    return result;
+}
+
+bool SnapshotManager::IsCancelUpdateSafe() {
+    // This may be called in recovery, so ensure we have /metadata.
+    auto mount = EnsureMetadataMounted();
+    if (!mount || !mount->HasDevice()) {
         return true;
     }
 
-    if (state == UpdateState::Initiated) {
-        LOG(INFO) << "Update has been initiated, now canceling";
-        return RemoveAllUpdateState(file.get());
+    auto lock = LockExclusive();
+    if (!lock) {
+        return false;
     }
 
-    if (state == UpdateState::Unverified) {
-        // We completed an update, but it can still be canceled if we haven't booted into it.
-        auto slot = GetCurrentSlot();
-        if (slot != Slot::Target) {
-            LOG(INFO) << "Canceling previously completed updates (if any)";
-            return RemoveAllUpdateState(file.get());
-        }
+    UpdateState state = ReadUpdateState(lock.get());
+    return IsCancelUpdateSafe(state) == CancelResult::OK;
+}
+
+CancelResult SnapshotManager::IsCancelUpdateSafe(UpdateState state) {
+    if (IsSnapshotWithoutSlotSwitch()) {
+        return CancelResult::LIVE_SNAPSHOTS;
     }
-    *needs_merge = true;
-    return true;
+
+    switch (state) {
+        case UpdateState::Merging:
+        case UpdateState::MergeNeedsReboot:
+        case UpdateState::MergeFailed:
+            return CancelResult::NEEDS_MERGE;
+        case UpdateState::Unverified: {
+            // We completed an update, but it can still be canceled if we haven't booted into it.
+            auto slot = GetCurrentSlot();
+            if (slot == Slot::Target) {
+                return CancelResult::LIVE_SNAPSHOTS;
+            }
+            return CancelResult::OK;
+        }
+        case UpdateState::None:
+        case UpdateState::Initiated:
+        case UpdateState::Cancelled:
+            return CancelResult::OK;
+        default:
+            LOG(ERROR) << "Unknown state: " << state;
+            return CancelResult::ERROR;
+    }
 }
 
 std::string SnapshotManager::ReadUpdateSourceSlotSuffix() {
@@ -314,9 +351,14 @@ bool SnapshotManager::RemoveAllUpdateState(LockedFile* lock, const std::function
 
     LOG(INFO) << "Removing all update state.";
 
-    if (!RemoveAllSnapshots(lock)) {
-        LOG(ERROR) << "Could not remove all snapshots";
-        return false;
+    if (ReadUpdateState(lock) != UpdateState::None) {
+        // Only call this if we're actually cancelling an update. It's not
+        // expected to yield anything otherwise, and firing up gsid on normal
+        // boot is expensive.
+        if (!RemoveAllSnapshots(lock)) {
+            LOG(ERROR) << "Could not remove all snapshots";
+            return false;
+        }
     }
 
     // It's okay if these fail:
@@ -1750,6 +1792,15 @@ bool SnapshotManager::PerformInitTransition(InitTransition transition,
         if (worker_count != 0) {
             snapuserd_argv->emplace_back("-worker_count=" + std::to_string(worker_count));
         }
+        uint32_t verify_block_size = GetVerificationBlockSize(lock.get());
+        if (verify_block_size != 0) {
+            snapuserd_argv->emplace_back("-verify_block_size=" + std::to_string(verify_block_size));
+        }
+        uint32_t num_verify_threads = GetNumVerificationThreads(lock.get());
+        if (num_verify_threads != 0) {
+            snapuserd_argv->emplace_back("-num_verify_threads=" +
+                                         std::to_string(num_verify_threads));
+        }
     }
 
     size_t num_cows = 0;
@@ -2054,11 +2105,22 @@ bool SnapshotManager::RemoveAllSnapshots(LockedFile* lock) {
     }
 
     if (ok || !has_mapped_cow_images) {
-        // Delete any image artifacts as a precaution, in case an update is
-        // being cancelled due to some corrupted state in an lp_metadata file.
-        // Note that we do not do this if some cow images are still mapped,
-        // since we must not remove backing storage if it's in use.
-        if (!EnsureImageManager() || !images_->RemoveAllImages()) {
+        if (!EnsureImageManager()) {
+            return false;
+        }
+
+        if (device_->IsRecovery()) {
+            // If a device is in recovery, we need to mark the snapshots for cleanup
+            // upon next reboot, since we cannot delete them here.
+            if (!images_->DisableAllImages()) {
+                LOG(ERROR) << "Could not remove all snapshot artifacts in recovery";
+                return false;
+            }
+        } else if (!images_->RemoveAllImages()) {
+            // Delete any image artifacts as a precaution, in case an update is
+            // being cancelled due to some corrupted state in an lp_metadata file.
+            // Note that we do not do this if some cow images are still mapped,
+            // since we must not remove backing storage if it's in use.
             LOG(ERROR) << "Could not remove all snapshot artifacts";
             return false;
         }
@@ -2172,6 +2234,11 @@ bool SnapshotManager::UpdateUsesODirect(LockedFile* lock) {
     return update_status.o_direct();
 }
 
+bool SnapshotManager::UpdateUsesSkipVerification(LockedFile* lock) {
+    SnapshotUpdateStatus update_status = ReadSnapshotUpdateStatus(lock);
+    return update_status.skip_verification();
+}
+
 uint32_t SnapshotManager::GetUpdateCowOpMergeSize(LockedFile* lock) {
     SnapshotUpdateStatus update_status = ReadSnapshotUpdateStatus(lock);
     return update_status.cow_op_merge_size();
@@ -2180,6 +2247,16 @@ uint32_t SnapshotManager::GetUpdateCowOpMergeSize(LockedFile* lock) {
 uint32_t SnapshotManager::GetUpdateWorkerCount(LockedFile* lock) {
     SnapshotUpdateStatus update_status = ReadSnapshotUpdateStatus(lock);
     return update_status.num_worker_threads();
+}
+
+uint32_t SnapshotManager::GetVerificationBlockSize(LockedFile* lock) {
+    SnapshotUpdateStatus update_status = ReadSnapshotUpdateStatus(lock);
+    return update_status.verify_block_size();
+}
+
+uint32_t SnapshotManager::GetNumVerificationThreads(LockedFile* lock) {
+    SnapshotUpdateStatus update_status = ReadSnapshotUpdateStatus(lock);
+    return update_status.num_verification_threads();
 }
 
 bool SnapshotManager::MarkSnapuserdFromSystem() {
@@ -3172,8 +3249,11 @@ bool SnapshotManager::WriteUpdateState(LockedFile* lock, UpdateState state,
         status.set_io_uring_enabled(old_status.io_uring_enabled());
         status.set_legacy_snapuserd(old_status.legacy_snapuserd());
         status.set_o_direct(old_status.o_direct());
+        status.set_skip_verification(old_status.skip_verification());
         status.set_cow_op_merge_size(old_status.cow_op_merge_size());
         status.set_num_worker_threads(old_status.num_worker_threads());
+        status.set_verify_block_size(old_status.verify_block_size());
+        status.set_num_verification_threads(old_status.num_verification_threads());
     }
     return WriteSnapshotUpdateStatus(lock, status);
 }
@@ -3552,6 +3632,10 @@ Return SnapshotManager::CreateUpdateSnapshots(const DeltaArchiveManifest& manife
             status.set_o_direct(true);
             LOG(INFO) << "o_direct for source image enabled";
         }
+        if (GetSkipVerificationProperty()) {
+            status.set_skip_verification(true);
+            LOG(INFO) << "skipping verification of images";
+        }
         if (is_legacy_snapuserd) {
             status.set_legacy_snapuserd(true);
             LOG(INFO) << "Setting legacy_snapuserd to true";
@@ -3560,7 +3644,10 @@ Return SnapshotManager::CreateUpdateSnapshots(const DeltaArchiveManifest& manife
                 android::base::GetUintProperty<uint32_t>("ro.virtual_ab.cow_op_merge_size", 0));
         status.set_num_worker_threads(
                 android::base::GetUintProperty<uint32_t>("ro.virtual_ab.num_worker_threads", 0));
-
+        status.set_verify_block_size(
+                android::base::GetUintProperty<uint32_t>("ro.virtual_ab.verify_block_size", 0));
+        status.set_num_verification_threads(
+                android::base::GetUintProperty<uint32_t>("ro.virtual_ab.num_verify_threads", 0));
     } else if (legacy_compression) {
         LOG(INFO) << "Virtual A/B using legacy snapuserd";
     } else {
@@ -3996,8 +4083,11 @@ bool SnapshotManager::Dump(std::ostream& os) {
     ss << "Using userspace snapshots: " << update_status.userspace_snapshots() << std::endl;
     ss << "Using io_uring: " << update_status.io_uring_enabled() << std::endl;
     ss << "Using o_direct: " << update_status.o_direct() << std::endl;
+    ss << "Using skip_verification: " << update_status.skip_verification() << std::endl;
     ss << "Cow op merge size (0 for uncapped): " << update_status.cow_op_merge_size() << std::endl;
     ss << "Worker thread count: " << update_status.num_worker_threads() << std::endl;
+    ss << "Num verification threads: " << update_status.num_verification_threads() << std::endl;
+    ss << "Verify block size: " << update_status.verify_block_size() << std::endl;
     ss << "Using XOR compression: " << GetXorCompressionEnabledProperty() << std::endl;
     ss << "Current slot: " << device_->GetSlotSuffix() << std::endl;
     ss << "Boot indicator: booting from " << GetCurrentSlot() << " slot" << std::endl;
@@ -4639,7 +4729,26 @@ std::string SnapshotManager::ReadSourceBuildFingerprint() {
     return status.source_build_fingerprint();
 }
 
-bool SnapshotManager::IsUserspaceSnapshotUpdateInProgress() {
+bool SnapshotManager::PauseSnapshotMerge() {
+    auto snapuserd_client = SnapuserdClient::TryConnect(kSnapuserdSocket, 5s);
+    if (snapuserd_client) {
+        // Pause the snapshot-merge
+        return snapuserd_client->PauseMerge();
+    }
+    return false;
+}
+
+bool SnapshotManager::ResumeSnapshotMerge() {
+    auto snapuserd_client = SnapuserdClient::TryConnect(kSnapuserdSocket, 5s);
+    if (snapuserd_client) {
+        // Resume the snapshot-merge
+        return snapuserd_client->ResumeMerge();
+    }
+    return false;
+}
+
+bool SnapshotManager::IsUserspaceSnapshotUpdateInProgress(
+        std::vector<std::string>& dynamic_partitions) {
     // We cannot grab /metadata/ota lock here as this
     // is in reboot path. See b/308900853
     //
@@ -4653,18 +4762,22 @@ bool SnapshotManager::IsUserspaceSnapshotUpdateInProgress() {
         LOG(ERROR) << "No dm-enabled block device is found.";
         return false;
     }
+
+    bool is_ota_in_progress = false;
     for (auto& partition : dm_block_devices) {
         std::string partition_name = partition.first + current_suffix;
         DeviceMapper::TargetInfo snap_target;
         if (!GetSingleTarget(partition_name, TableQuery::Status, &snap_target)) {
-            return false;
+            continue;
         }
         auto type = DeviceMapper::GetTargetType(snap_target.spec);
+        // Partition is mounted off snapshots
         if (type == "user") {
-            return true;
+            dynamic_partitions.emplace_back("/" + partition.first);
+            is_ota_in_progress = true;
         }
     }
-    return false;
+    return is_ota_in_progress;
 }
 
 bool SnapshotManager::BootFromSnapshotsWithoutSlotSwitch() {

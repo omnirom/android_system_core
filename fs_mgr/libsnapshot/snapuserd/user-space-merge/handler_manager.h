@@ -15,6 +15,7 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <queue>
 #include <string>
 #include <thread>
@@ -25,6 +26,16 @@
 
 namespace android {
 namespace snapshot {
+
+struct HandlerOptions {
+    int num_worker_threads{};
+    bool use_iouring{};
+    bool o_direct{};
+    bool skip_verification{};
+    uint32_t cow_op_merge_size{};
+    uint32_t verify_block_size{};
+    uint32_t num_verification_threads{};
+};
 
 class SnapshotHandler;
 
@@ -52,11 +63,12 @@ class ISnapshotHandlerManager {
     virtual ~ISnapshotHandlerManager() {}
 
     // Add a new snapshot handler but do not start serving requests yet.
-    virtual std::shared_ptr<HandlerThread> AddHandler(
-            const std::string& misc_name, const std::string& cow_device_path,
-            const std::string& backing_device, const std::string& base_path_merge,
-            std::shared_ptr<IBlockServerOpener> opener, int num_worker_threads, bool use_iouring,
-            bool o_direct, uint32_t cow_op_merge_size) = 0;
+    virtual std::shared_ptr<HandlerThread> AddHandler(const std::string& misc_name,
+                                                      const std::string& cow_device_path,
+                                                      const std::string& backing_device,
+                                                      const std::string& base_path_merge,
+                                                      std::shared_ptr<IBlockServerOpener> opener,
+                                                      HandlerOptions options) = 0;
 
     // Start serving requests on a snapshot handler.
     virtual bool StartHandler(const std::string& misc_name) = 0;
@@ -85,6 +97,12 @@ class ISnapshotHandlerManager {
 
     // Disable partition verification
     virtual void DisableVerification() = 0;
+
+    // Pause Merge threads
+    virtual void PauseMerge() = 0;
+
+    // Resume Merge threads
+    virtual void ResumeMerge() = 0;
 };
 
 class SnapshotHandlerManager final : public ISnapshotHandlerManager {
@@ -95,8 +113,8 @@ class SnapshotHandlerManager final : public ISnapshotHandlerManager {
                                               const std::string& backing_device,
                                               const std::string& base_path_merge,
                                               std::shared_ptr<IBlockServerOpener> opener,
-                                              int num_worker_threads, bool use_iouring,
-                                              bool o_direct, uint32_t cow_op_merge_size) override;
+                                              HandlerOptions options) override;
+
     bool StartHandler(const std::string& misc_name) override;
     bool DeleteHandler(const std::string& misc_name) override;
     bool InitiateMerge(const std::string& misc_name) override;
@@ -106,6 +124,8 @@ class SnapshotHandlerManager final : public ISnapshotHandlerManager {
     double GetMergePercentage() override;
     bool GetVerificationStatus() override;
     void DisableVerification() override { perform_verification_ = false; }
+    void PauseMerge() override;
+    void ResumeMerge() override;
 
   private:
     bool StartHandler(const std::shared_ptr<HandlerThread>& handler);

@@ -25,6 +25,13 @@
 #include <sys/vfs.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <filesystem>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
 #include <android-base/file.h>
 #include <android-base/logging.h>
 #include <android-base/macros.h>
@@ -41,12 +48,6 @@
 #include <fstab/fstab.h>
 #include <liblp/builder.h>
 #include <storage_literals/storage_literals.h>
-#include <algorithm>
-#include <filesystem>
-#include <memory>
-#include <optional>
-#include <string>
-#include <vector>
 
 #include "device_info.h"
 #include "scratch_super.h"
@@ -60,9 +61,18 @@ namespace android {
 namespace snapshot {
 
 static bool UmountScratch() {
-    auto ota_dir = std::string(kOtaMetadataMount) + "/" + "ota";
-    std::error_code ec;
+    Fstab fstab;
+    if (!ReadFstabFromProcMounts(&fstab)) {
+        LOG(ERROR) << "Cannot read /proc/mounts";
+        return false;
+    }
+    if (GetEntryForMountPoint(&fstab, kOtaMetadataMount) == nullptr) {
+        return true;
+    }
 
+    auto ota_dir = std::string(kOtaMetadataMount) + "/" + "ota";
+
+    std::error_code ec;
     if (std::filesystem::remove_all(ota_dir, ec) == static_cast<std::uintmax_t>(-1)) {
         LOG(ERROR) << "Failed to remove OTA directory: " << ec.message();
         return false;
@@ -386,7 +396,7 @@ std::string MapScratchOtaMetadataPartition(const std::string& scratch_device) {
 }
 
 // Entry point to create a scratch device on super partition
-// This will create a 1MB space in super. The space will be
+// This will create a 2MB space in super. The space will be
 // from the current active slot. Ext4 filesystem will be created
 // on this scratch device and all the OTA related directories
 // will be created.

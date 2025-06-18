@@ -22,6 +22,8 @@
 #include <android-base/strings.h>
 #include <snapuserd/dm_user_block_server.h>
 
+#include <future>
+
 #include "merge_worker.h"
 #include "read_worker.h"
 #include "utility.h"
@@ -35,26 +37,21 @@ using android::base::unique_fd;
 
 SnapshotHandler::SnapshotHandler(std::string misc_name, std::string cow_device,
                                  std::string backing_device, std::string base_path_merge,
-                                 std::shared_ptr<IBlockServerOpener> opener, int num_worker_threads,
-                                 bool use_iouring, bool perform_verification, bool o_direct,
-                                 uint32_t cow_op_merge_size) {
+                                 std::shared_ptr<IBlockServerOpener> opener,
+                                 HandlerOptions options) {
     misc_name_ = std::move(misc_name);
     cow_device_ = std::move(cow_device);
     backing_store_device_ = std::move(backing_device);
     block_server_opener_ = std::move(opener);
     base_path_merge_ = std::move(base_path_merge);
-    num_worker_threads_ = num_worker_threads;
-    is_io_uring_enabled_ = use_iouring;
-    perform_verification_ = perform_verification;
-    o_direct_ = o_direct;
-    cow_op_merge_size_ = cow_op_merge_size;
+    handler_options_ = options;
 }
 
 bool SnapshotHandler::InitializeWorkers() {
     for (int i = 0; i < num_worker_threads_; i++) {
         auto wt = std::make_unique<ReadWorker>(cow_device_, backing_store_device_, misc_name_,
                                                base_path_merge_, GetSharedPtr(),
-                                               block_server_opener_, o_direct_);
+                                               block_server_opener_, handler_options_.o_direct);
         if (!wt->Init()) {
             SNAP_LOG(ERROR) << "Thread initialization failed";
             return false;
@@ -62,13 +59,16 @@ bool SnapshotHandler::InitializeWorkers() {
 
         worker_threads_.push_back(std::move(wt));
     }
-    merge_thread_ = std::make_unique<MergeWorker>(cow_device_, misc_name_, base_path_merge_,
-                                                  GetSharedPtr(), cow_op_merge_size_);
+    merge_thread_ =
+            std::make_unique<MergeWorker>(cow_device_, misc_name_, base_path_merge_, GetSharedPtr(),
+                                          handler_options_.cow_op_merge_size);
 
-    read_ahead_thread_ = std::make_unique<ReadAhead>(cow_device_, backing_store_device_, misc_name_,
-                                                     GetSharedPtr(), cow_op_merge_size_);
+    read_ahead_thread_ =
+            std::make_unique<ReadAhead>(cow_device_, backing_store_device_, misc_name_,
+                                        GetSharedPtr(), handler_options_.cow_op_merge_size);
 
-    update_verify_ = std::make_unique<UpdateVerify>(misc_name_);
+    update_verify_ = std::make_unique<UpdateVerify>(misc_name_, handler_options_.verify_block_size,
+                                                    handler_options_.num_verification_threads);
 
     return true;
 }
@@ -429,7 +429,7 @@ bool SnapshotHandler::IsIouringSupported() {
     // During selinux init transition, libsnapshot will propagate the
     // status of io_uring enablement. As properties are not initialized,
     // we cannot query system property.
-    if (is_io_uring_enabled_) {
+    if (handler_options_.use_iouring) {
         return true;
     }
 

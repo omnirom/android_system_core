@@ -199,10 +199,26 @@ bool WriteStringToFileAtomic(const std::string& content, const std::string& path
 }
 
 std::ostream& operator<<(std::ostream& os, const Now&) {
-    struct tm now{};
+    struct tm now {};
     time_t t = time(nullptr);
     localtime_r(&t, &now);
     return os << std::put_time(&now, "%Y%m%d-%H%M%S");
+}
+
+std::ostream& operator<<(std::ostream& os, CancelResult result) {
+    switch (result) {
+        case CancelResult::OK:
+            return os << "ok";
+        case CancelResult::ERROR:
+            return os << "error";
+        case CancelResult::LIVE_SNAPSHOTS:
+            return os << "live_snapshots";
+        case CancelResult::NEEDS_MERGE:
+            return os << "needs_merge";
+        default:
+            LOG(ERROR) << "Unknown cancel result: " << static_cast<uint32_t>(result);
+            return os;
+    }
 }
 
 void AppendExtent(RepeatedPtrField<chromeos_update_engine::Extent>* extents, uint64_t start_block,
@@ -275,6 +291,11 @@ bool GetXorCompressionEnabledProperty() {
 bool GetODirectEnabledProperty() {
     auto fetcher = IPropertyFetcher::GetInstance();
     return fetcher->GetBoolProperty("ro.virtual_ab.o_direct.enabled", false);
+}
+
+bool GetSkipVerificationProperty() {
+    auto fetcher = IPropertyFetcher::GetInstance();
+    return fetcher->GetBoolProperty("ro.virtual_ab.skip_verification", false);
 }
 
 std::string GetOtherPartitionName(const std::string& name) {

@@ -51,7 +51,6 @@ class UserSnapshotServer {
     std::vector<struct pollfd> watched_fds_;
     bool is_socket_present_ = false;
     bool is_server_running_ = false;
-    bool io_uring_enabled_ = false;
     std::unique_ptr<ISnapshotHandlerManager> handlers_;
     std::unique_ptr<IBlockServerFactory> block_server_factory_;
 
@@ -87,17 +86,13 @@ class UserSnapshotServer {
                                               const std::string& cow_device_path,
                                               const std::string& backing_device,
                                               const std::string& base_path_merge,
-                                              std::optional<uint32_t> num_worker_threads,
-                                              bool o_direct = false,
-                                              uint32_t cow_op_merge_size = 0);
+                                              HandlerOptions options);
     bool StartHandler(const std::string& misc_name);
 
     void SetTerminating() { terminating_ = true; }
     void ReceivedSocketSignal() { received_socket_signal_ = true; }
     void SetServerRunning() { is_server_running_ = true; }
     bool IsServerRunning() { return is_server_running_; }
-    void SetIouringEnabled() { io_uring_enabled_ = true; }
-    bool IsIouringEnabled() { return io_uring_enabled_; }
 };
 
 }  // namespace snapshot
