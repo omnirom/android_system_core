@@ -44,5 +44,10 @@ void vendor_create_device_symlinks(int, std::string, std::vector<std::string>&)
 }
 #endif
 
+__attribute__ ((weak))
+void vendor_process_bootenv()
+{
+}
+
 }
 }

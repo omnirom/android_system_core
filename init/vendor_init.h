@@ -33,11 +33,11 @@ IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 namespace android {
 namespace init {
 
-extern void vendor_load_properties(void);
-
+void vendor_load_properties();
 #ifdef TARGET_CREATE_DEVICE_SYMLINKS
-extern void vendor_create_device_symlinks(int partNum, std::string partName, std::vector<std::string>& links);
+void vendor_create_device_symlinks(int partNum, std::string partName, std::vector<std::string>& links);
 #endif
+void vendor_process_bootenv();
 
 }
 }
