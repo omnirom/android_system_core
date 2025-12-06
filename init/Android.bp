@@ -229,7 +229,7 @@ cc_defaults {
         default: [],
     }),
     export_cflags: select(soong_config_variable("libinit", "vendor_init_device_symlinks"), {
-        "true": ["-DTARGET_CREATE_DEVICE_SYMLINKS"],
+        true: ["-DTARGET_CREATE_DEVICE_SYMLINKS"],
         default: [],
      }),
     header_libs: ["bootimg_headers"],
