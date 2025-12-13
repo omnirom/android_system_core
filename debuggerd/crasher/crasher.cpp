@@ -32,6 +32,7 @@
 
 #include <android-base/file.h>
 #include <android-base/strings.h>
+#include <android-base/test_utils.h>
 
 // We test both kinds of logging.
 #include <android-base/logging.h>
@@ -145,11 +146,23 @@ noinline int crash(int a) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wfree-nonheap-object"
 
-noinline void abuse_heap() {
+noinline void invalid_free() {
     char buf[16];
-    free(buf); // GCC is smart enough to warn about this, but we're doing it deliberately.
+    free(buf); // The compiler is smart enough to warn about this, but we're doing it deliberately.
 }
 #pragma clang diagnostic pop
+
+noinline void heap_buffer_overflow() {
+    volatile char* p = reinterpret_cast<volatile char*>(malloc(32));
+    p[32] = p[32];
+}
+
+noinline void use_after_free() {
+    void* allocation = malloc(32);
+    volatile char* p = reinterpret_cast<volatile char*>(allocation);
+    free(allocation);
+    p[0] = p[0];
+}
 
 noinline void leak() {
     while (true) {
@@ -162,6 +175,16 @@ noinline void leak() {
 noinline void sigsegv_non_null() {
     int* a = (int *)(&do_action);
     *a = 42;
+}
+
+noinline void sigsegv_write() {
+  int* a = reinterpret_cast<int*>(0xdeadbeef);
+  *a = 10;
+}
+
+noinline void sigsegv_read() {
+  volatile int* a = reinterpret_cast<volatile int*>(0xdeadbeef);
+  android::base::DoNotOptimize(*a);
 }
 
 noinline void fprintf_null() {
@@ -187,7 +210,10 @@ static int usage() {
     fprintf(stderr, "  stack-overflow        recurse until the stack overflows\n");
     fprintf(stderr, "  nostack               crash with a NULL stack pointer\n");
     fprintf(stderr, "\n");
-    fprintf(stderr, "  heap-usage            cause a libc abort by abusing a heap function\n");
+    fprintf(stderr, "  heap-buffer-overflow  write past the end of a heap allocation\n");
+    fprintf(stderr, "  invalid-free          pass a non-heap pointer to free()\n");
+    fprintf(stderr, "  use-after-free        write to a buffer after free()\n");
+    fprintf(stderr, "\n");
     fprintf(stderr, "  call-null             cause a crash by calling through a nullptr\n");
     fprintf(stderr, "  leak                  leak memory until we get OOM-killed\n");
     fprintf(stderr, "\n");
@@ -215,6 +241,8 @@ static int usage() {
     fprintf(stderr, "  SIGSEGV               cause a SIGSEGV at address 0x0 (synonym: crash)\n");
     fprintf(stderr, "  SIGSEGV-non-null      cause a SIGSEGV at a non-zero address\n");
     fprintf(stderr, "  SIGSEGV-unmapped      mmap/munmap a region of memory and then attempt to access it\n");
+    fprintf(stderr, "  SIGSEGV-read          cause a SIGSEGV reading from a non-zero address\n");
+    fprintf(stderr, "  SIGSEGV-write         cause a SIGSEGV writing to a non-zero address\n");
     fprintf(stderr, "  SIGTRAP               cause a SIGTRAP\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "  fprintf-NULL          pass a null pointer to fprintf\n");
@@ -280,6 +308,10 @@ noinline int do_action(const char* arg) {
     // Actions.
     if (!strcasecmp(arg, "SIGSEGV-non-null")) {
       sigsegv_non_null();
+    } else if (!strcasecmp(arg, "SIGSEGV-read")) {
+      sigsegv_read();
+    } else if (!strcasecmp(arg, "SIGSEGV-write")) {
+      sigsegv_write();
     } else if (!strcasecmp(arg, "smash-stack")) {
       volatile int len = 128;
       return smash_stack(&len);
@@ -351,8 +383,12 @@ noinline int do_action(const char* arg) {
       return strlen_null();
     } else if (!strcasecmp(arg, "pthread_join-NULL")) {
       return pthread_join(0, nullptr);
-    } else if (!strcasecmp(arg, "heap-usage")) {
-      abuse_heap();
+    } else if (!strcasecmp(arg, "heap-buffer-overflow")) {
+      heap_buffer_overflow();
+    } else if (!strcasecmp(arg, "invalid-free")) {
+      invalid_free();
+    } else if (!strcasecmp(arg, "use-after-free")) {
+      use_after_free();
     } else if (!strcasecmp(arg, "leak")) {
       leak();
     } else if (!strcasecmp(arg, "SIGSEGV-unmapped")) {
@@ -398,7 +434,7 @@ noinline int do_action(const char* arg) {
         return usage();
     }
 
-    fprintf(stderr, "%s: exiting normally!\n", getprogname());
+    fprintf(stderr, "%s: exiting normally (which is unexpected)!\n", getprogname());
     return EXIT_SUCCESS;
 }
 

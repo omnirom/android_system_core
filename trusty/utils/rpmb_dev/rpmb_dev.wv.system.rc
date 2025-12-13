@@ -1,5 +1,5 @@
 service storageproxyd_wv_system /system_ext/bin/storageproxyd.system \
-        -d VSOCK:${trusty.widevine_vm.vm_cid}:1 \
+        -d VSOCK:${trusty.widevine_vm.vm_cid}:0 \
         -r /dev/socket/rpmb_mock_wv_system \
         -p /data/secure_storage_wv_system \
         -t sock
@@ -47,7 +47,7 @@ on early-boot
     exec_start rpmb_mock_init_wv_system
     start rpmb_mock_wv_system
 
-on post-fs-data && \
+on property:sys.boot_completed=1  && \
     property:trusty.widevine_vm.nonsecure_vm_ready=1 && \
     property:trusty.widevine_vm.vm_cid=*
     start storageproxyd_wv_system

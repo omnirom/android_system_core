@@ -329,7 +329,7 @@ bool DeviceMapper::LoadTable(const std::string& name, const DmTable& table) {
         io->flags |= DM_READONLY_FLAG;
     }
     if (ioctl(fd_, DM_TABLE_LOAD, io)) {
-        PLOG(ERROR) << "DM_TABLE_LOAD failed";
+        PLOG(ERROR) << "DM_TABLE_LOAD failed: name=" << name << ", table=" << table.DebugString();
         return false;
     }
     return true;

@@ -23,7 +23,6 @@
 #include <vector>
 
 #include <android-base/logging.h>
-#include <brotli/decode.h>
 #include <lz4.h>
 #include <zlib.h>
 #include <zstd.h>
@@ -59,8 +58,6 @@ ssize_t IByteStream::ReadFully(void* buffer, size_t buffer_size) {
 std::unique_ptr<IDecompressor> IDecompressor::FromString(std::string_view compressor) {
     if (compressor == "lz4") {
         return IDecompressor::Lz4();
-    } else if (compressor == "brotli") {
-        return IDecompressor::Brotli();
     } else if (compressor == "gz") {
         return IDecompressor::Gz();
     } else if (compressor == "zstd") {
@@ -214,66 +211,6 @@ bool GzDecompressor::PartialDecompress(const uint8_t* data, size_t length) {
     return true;
 }
 
-class BrotliDecompressor final : public StreamDecompressor {
-  public:
-    ~BrotliDecompressor();
-
-    bool Init() override;
-    bool PartialDecompress(const uint8_t* data, size_t length) override;
-
-  private:
-    BrotliDecoderState* decoder_ = nullptr;
-};
-
-bool BrotliDecompressor::Init() {
-    decoder_ = BrotliDecoderCreateInstance(nullptr, nullptr, nullptr);
-    return true;
-}
-
-BrotliDecompressor::~BrotliDecompressor() {
-    if (decoder_) {
-        BrotliDecoderDestroyInstance(decoder_);
-    }
-}
-
-bool BrotliDecompressor::PartialDecompress(const uint8_t* data, size_t length) {
-    size_t available_in = length;
-    const uint8_t* next_in = data;
-
-    while (available_in && ignore_bytes_ && !BrotliDecoderIsFinished(decoder_)) {
-        std::array<uint8_t, kChunkSize> ignore_buffer;
-        size_t max_ignore = std::min(ignore_bytes_, ignore_buffer.size());
-        size_t ignore_size = max_ignore;
-
-        uint8_t* ignore_buffer_ptr = ignore_buffer.data();
-        auto r = BrotliDecoderDecompressStream(decoder_, &available_in, &next_in, &ignore_size,
-                                               &ignore_buffer_ptr, nullptr);
-        if (r == BROTLI_DECODER_RESULT_ERROR) {
-            LOG(ERROR) << "brotli decode failed";
-            return false;
-        } else if (r == BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT && available_in) {
-            LOG(ERROR) << "brotli unexpected needs more input";
-            return false;
-        }
-        ignore_bytes_ -= max_ignore - ignore_size;
-    }
-
-    while (available_in && !BrotliDecoderIsFinished(decoder_)) {
-        auto r = BrotliDecoderDecompressStream(decoder_, &available_in, &next_in,
-                                               &output_buffer_remaining_, &output_buffer_, nullptr);
-        if (r == BROTLI_DECODER_RESULT_ERROR) {
-            LOG(ERROR) << "brotli decode failed";
-            return false;
-        } else if (r == BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT && available_in) {
-            LOG(ERROR) << "brotli unexpected needs more input";
-            return false;
-        }
-    }
-
-    decompressor_ended_ = BrotliDecoderIsFinished(decoder_);
-    return true;
-}
-
 class Lz4Decompressor final : public IDecompressor {
   public:
     ~Lz4Decompressor() override = default;
@@ -376,10 +313,6 @@ class ZstdDecompressor final : public IDecompressor {
         return true;
     }
 };
-
-std::unique_ptr<IDecompressor> IDecompressor::Brotli() {
-    return std::make_unique<BrotliDecompressor>();
-}
 
 std::unique_ptr<IDecompressor> IDecompressor::Gz() {
     return std::make_unique<GzDecompressor>();

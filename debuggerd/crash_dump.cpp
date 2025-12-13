@@ -227,6 +227,7 @@ static bool activity_manager_notify(pid_t pid, int signal, const std::string& am
 // Globals used by the abort handler.
 static pid_t g_target_thread = -1;
 static bool g_tombstoned_connected = false;
+static bool g_is_microdroid_crash = false;
 static unique_fd g_tombstoned_socket;
 static unique_fd g_output_fd;
 static unique_fd g_proto_fd;
@@ -251,7 +252,7 @@ static void Initialize(char** argv) {
     // potential listeners know that we failed.
     if (!g_tombstoned_connected) {
       if (!connect_tombstone_server(g_target_thread, &g_tombstoned_socket, &g_output_fd,
-                                    &g_proto_fd, kDebuggerdAnyIntercept)) {
+                                    &g_proto_fd, kDebuggerdAnyIntercept, g_is_microdroid_crash)) {
         // We failed to connect, not much we can do.
         LOG(ERROR) << "failed to connected to tombstoned to report failure";
         _exit(1);
@@ -302,7 +303,7 @@ static void ParseArgs(int argc, char** argv, pid_t* pseudothread_tid, DebuggerdD
 static void ReadCrashInfo(unique_fd& fd, siginfo_t* siginfo,
                           std::unique_ptr<unwindstack::Regs>* regs, ProcessInfo* process_info,
                           bool* recoverable_crash) {
-  std::aligned_storage<sizeof(CrashInfo) + 1, alignof(CrashInfo)>::type buf;
+  std::aligned_storage<sizeof(CrashInfo) + 1, alignof(CrashInfo)>::type buf = {};
   CrashInfo* crash_info = reinterpret_cast<CrashInfo*>(&buf);
   ssize_t rc = TEMP_FAILURE_RETRY(read(fd.get(), &buf, sizeof(buf)));
   *recoverable_crash = false;
@@ -310,19 +311,19 @@ static void ReadCrashInfo(unique_fd& fd, siginfo_t* siginfo,
     PLOG(FATAL) << "failed to read target ucontext";
   }
   ssize_t expected_size = 0;
-  switch (crash_info->header.version) {
+  switch (crash_info->c.version) {
     case 1:
     case 2:
     case 3:
-      expected_size = sizeof(CrashInfoHeader) + sizeof(CrashInfoDataStatic);
+      expected_size = sizeof(CrashInfoDataCommon);
       break;
 
     case 4:
-      expected_size = sizeof(CrashInfoHeader) + sizeof(CrashInfoDataDynamic);
+      expected_size = sizeof(CrashInfo);
       break;
 
     default:
-      LOG(FATAL) << "unexpected CrashInfo version: " << crash_info->header.version;
+      LOG(FATAL) << "unexpected CrashInfo version: " << crash_info->c.version;
       break;
   }
 
@@ -331,24 +332,24 @@ static void ReadCrashInfo(unique_fd& fd, siginfo_t* siginfo,
                 << expected_size;
   }
 
-  switch (crash_info->header.version) {
+  switch (crash_info->c.version) {
     case 4:
-      process_info->fdsan_table_address = crash_info->data.d.fdsan_table_address;
-      process_info->gwp_asan_state = crash_info->data.d.gwp_asan_state;
-      process_info->gwp_asan_metadata = crash_info->data.d.gwp_asan_metadata;
-      process_info->scudo_stack_depot = crash_info->data.d.scudo_stack_depot;
-      process_info->scudo_stack_depot_size = crash_info->data.d.scudo_stack_depot_size;
-      process_info->scudo_region_info = crash_info->data.d.scudo_region_info;
-      process_info->scudo_ring_buffer = crash_info->data.d.scudo_ring_buffer;
-      process_info->scudo_ring_buffer_size = crash_info->data.d.scudo_ring_buffer_size;
-      *recoverable_crash = crash_info->data.d.recoverable_crash;
-      process_info->crash_detail_page = crash_info->data.d.crash_detail_page;
+      process_info->fdsan_table_address = crash_info->d.fdsan_table_address;
+      process_info->gwp_asan_state = crash_info->d.gwp_asan_state;
+      process_info->gwp_asan_metadata = crash_info->d.gwp_asan_metadata;
+      process_info->scudo_stack_depot = crash_info->d.scudo_stack_depot;
+      process_info->scudo_stack_depot_size = crash_info->d.scudo_stack_depot_size;
+      process_info->scudo_region_info = crash_info->d.scudo_region_info;
+      process_info->scudo_ring_buffer = crash_info->d.scudo_ring_buffer;
+      process_info->scudo_ring_buffer_size = crash_info->d.scudo_ring_buffer_size;
+      *recoverable_crash = crash_info->d.recoverable_crash;
+      process_info->crash_detail_page = crash_info->d.crash_detail_page;
       FALLTHROUGH_INTENDED;
     case 1:
     case 2:
     case 3:
-      process_info->abort_msg_address = crash_info->data.s.abort_msg_address;
-      *siginfo = crash_info->data.s.siginfo;
+      process_info->abort_msg_address = crash_info->c.abort_msg_address;
+      *siginfo = crash_info->c.siginfo;
       if (signal_has_si_addr(siginfo)) {
         process_info->has_fault_address = true;
         process_info->maybe_tagged_fault_address = reinterpret_cast<uintptr_t>(siginfo->si_addr);
@@ -356,7 +357,7 @@ static void ReadCrashInfo(unique_fd& fd, siginfo_t* siginfo,
             untag_address(reinterpret_cast<uintptr_t>(siginfo->si_addr));
       }
       regs->reset(unwindstack::Regs::CreateFromUcontext(unwindstack::Regs::CurrentArch(),
-                                                        &crash_info->data.s.ucontext));
+                                                        &crash_info->c.ucontext));
       break;
 
     default:
@@ -706,7 +707,10 @@ int main(int argc, char** argv) {
         info.siginfo = &siginfo;
         info.signo = info.siginfo->si_signo;
 
+        info.executable_name = get_executable_name(g_target_thread);
         info.command_line = get_command_line(g_target_thread);
+
+        g_is_microdroid_crash = is_microdroid() && info.signo != BIONIC_SIGNAL_DEBUGGER;
       } else {
         info.registers.reset(unwindstack::Regs::RemoteGet(thread));
         if (!info.registers) {
@@ -768,8 +772,9 @@ int main(int argc, char** argv) {
   {
     ATRACE_NAME("tombstoned_connect");
     LOG(INFO) << "obtaining output fd from tombstoned, type: " << dump_type;
-    g_tombstoned_connected = connect_tombstone_server(g_target_thread, &g_tombstoned_socket,
-                                                      &g_output_fd, &g_proto_fd, dump_type);
+    g_tombstoned_connected =
+        connect_tombstone_server(g_target_thread, &g_tombstoned_socket, &g_output_fd, &g_proto_fd,
+                                 dump_type, g_is_microdroid_crash);
   }
 
   if (g_tombstoned_connected) {
@@ -873,8 +878,8 @@ int main(int argc, char** argv) {
 
   // Close stdout before we notify tombstoned of completion.
   close(STDOUT_FILENO);
-  if (g_tombstoned_connected &&
-      !notify_completion(g_tombstoned_socket.get(), g_output_fd.get(), g_proto_fd.get())) {
+  if (g_tombstoned_connected && !notify_completion(g_tombstoned_socket.get(), g_output_fd.get(),
+                                                   g_proto_fd.get(), g_is_microdroid_crash)) {
     LOG(ERROR) << "failed to notify tombstoned of completion";
   }
 

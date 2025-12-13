@@ -39,6 +39,10 @@
 #include "rpmb.h"
 #include "storage.h"
 
+/* sg_io_hdr_t host_status codes */
+#define DID_OK 0
+#define DID_REQUEUE 0x0d
+
 #define MMC_READ_MULTIPLE_BLOCK 18
 #define MMC_WRITE_MULTIPLE_BLOCK 25
 #define MMC_RELIABLE_WRITE_FLAG (1 << 31)
@@ -256,12 +260,14 @@ static enum scsi_result check_scsi_sense(const uint8_t* sense_buf, size_t len) {
     switch (sense_key) {
         case NO_SENSE:
         case 0x0f: /* COMPLETED, not present in kernel headers */
-            ALOGD("SCSI success with sense data: key=%hhu, asc=%hhu, ascq=%hhu\n", sense_key,
-                  additional_sense_code, additional_sense_code_qualifier);
+            ALOGD("SCSI success with sense data: key=%hhu, asc=%hhu, ascq=%hhu, al=%hhu\n",
+                  sense_key, additional_sense_code, additional_sense_code_qualifier,
+                  additional_length);
             return SCSI_RES_OK;
         case UNIT_ATTENTION:
-            ALOGD("UNIT ATTENTION with sense data: key=%hhu, asc=%hhu, ascq=%hhu\n", sense_key,
-                  additional_sense_code, additional_sense_code_qualifier);
+            ALOGD("UNIT ATTENTION with sense data: key=%hhu, asc=%hhu, ascq=%hhu, al=%hhu\n",
+                  sense_key, additional_sense_code, additional_sense_code_qualifier,
+                  additional_length);
             if (additional_sense_code == 0x29) {
                 /* POWER ON or RESET condition */
                 return SCSI_RES_RETRY;
@@ -308,6 +314,11 @@ static enum scsi_result check_sg_io_hdr(const sg_io_hdr_t* io_hdrp) {
             ALOGE("SG_IO failed with masked_status: %hhu, host_status: %hu, driver_status: %hu\n",
                   io_hdrp->masked_status, io_hdrp->host_status, io_hdrp->driver_status);
             return SCSI_RES_ERR;
+    }
+
+    if (io_hdrp->host_status == DID_REQUEUE && io_hdrp->driver_status == 0) {
+        ALOGW("SG_IO failed with host_status: DID_REQUEUE, retrying\n");
+        return SCSI_RES_RETRY;
     }
 
     if (io_hdrp->host_status != 0) {
@@ -377,7 +388,7 @@ static int send_mmc_rpmb_req(int mmc_fd, const struct storage_rpmb_send_req* req
     }
 
     watch_progress(watcher, "rpmb mmc ioctl");
-    rc = ioctl(mmc_fd, MMC_IOC_MULTI_CMD, &mmc.multi);
+    rc = TEMP_FAILURE_RETRY(ioctl(mmc_fd, MMC_IOC_MULTI_CMD, &mmc.multi));
     watch_progress(watcher, "rpmb mmc ioctl done");
     if (rc < 0) {
         ALOGE("%s: mmc ioctl failed: %d, %s\n", __func__, rc, strerror(errno));
@@ -407,7 +418,9 @@ static int send_ufs_rpmb_req(int sg_fd, const struct storage_rpmb_send_req* req,
      * receive an async notification that the service is started to avoid
      * blocking (see main).
      */
+    watch_progress(watcher, "rpmb ufs acquire wake_lock");
     wl_rc = acquire_wake_lock(PARTIAL_WAKE_LOCK, UFS_WAKE_LOCK_NAME);
+    watch_progress(watcher, "rpmb ufs acquire wake_lock done");
     if (wl_rc < 0) {
         ALOGE("%s: failed to acquire wakelock: %d, %s\n", __func__, wl_rc, strerror(errno));
         return wl_rc;
@@ -423,7 +436,7 @@ static int send_ufs_rpmb_req(int sg_fd, const struct storage_rpmb_send_req* req,
                           req->reliable_write_size, (void*)write_buf, (unsigned char*)&out_cdb,
                           sense_buffer);
             watch_progress(watcher, "rpmb ufs reliable write");
-            rc = ioctl(sg_fd, SG_IO, &io_hdr);
+            rc = TEMP_FAILURE_RETRY(ioctl(sg_fd, SG_IO, &io_hdr));
             watch_progress(watcher, "rpmb ufs reliable write done");
             if (rc < 0) {
                 ALOGE("%s: ufs ioctl failed: %d, %s\n", __func__, rc, strerror(errno));
@@ -450,7 +463,7 @@ static int send_ufs_rpmb_req(int sg_fd, const struct storage_rpmb_send_req* req,
                           req->write_size, (void*)write_buf, (unsigned char*)&out_cdb,
                           sense_buffer);
             watch_progress(watcher, "rpmb ufs write");
-            rc = ioctl(sg_fd, SG_IO, &io_hdr);
+            rc = TEMP_FAILURE_RETRY(ioctl(sg_fd, SG_IO, &io_hdr));
             watch_progress(watcher, "rpmb ufs write done");
             if (rc < 0) {
                 ALOGE("%s: ufs ioctl failed: %d, %s\n", __func__, rc, strerror(errno));
@@ -467,7 +480,7 @@ static int send_ufs_rpmb_req(int sg_fd, const struct storage_rpmb_send_req* req,
         set_sg_io_hdr(&io_hdr, SG_DXFER_FROM_DEV, sizeof(in_cdb), sizeof(sense_buffer),
                       req->read_size, read_buf, (unsigned char*)&in_cdb, sense_buffer);
         watch_progress(watcher, "rpmb ufs read");
-        rc = ioctl(sg_fd, SG_IO, &io_hdr);
+        rc = TEMP_FAILURE_RETRY(ioctl(sg_fd, SG_IO, &io_hdr));
         watch_progress(watcher, "rpmb ufs read done");
         if (rc < 0) {
             ALOGE("%s: ufs ioctl failed: %d, %s\n", __func__, rc, strerror(errno));
@@ -476,7 +489,9 @@ static int send_ufs_rpmb_req(int sg_fd, const struct storage_rpmb_send_req* req,
     }
 
 err_op:
+    watch_progress(watcher, "rpmb ufs release wake_lock");
     wl_rc = release_wake_lock(UFS_WAKE_LOCK_NAME);
+    watch_progress(watcher, "rpmb ufs release wake_lock done");
     if (wl_rc < 0) {
         ALOGE("%s: failed to release wakelock: %d, %s\n", __func__, wl_rc, strerror(errno));
     }
@@ -489,19 +504,19 @@ static int send_virt_rpmb_req(int rpmb_fd, void* read_buf, size_t read_size, con
     int rc;
     uint16_t res_count = read_size / MMC_BLOCK_SIZE;
     uint16_t cmd_count = payload_size / MMC_BLOCK_SIZE;
-    rc = write(rpmb_fd, &res_count, sizeof(res_count));
+    rc = TEMP_FAILURE_RETRY(write(rpmb_fd, &res_count, sizeof(res_count)));
     if (rc < 0) {
         return rc;
     }
-    rc = write(rpmb_fd, &cmd_count, sizeof(cmd_count));
+    rc = TEMP_FAILURE_RETRY(write(rpmb_fd, &cmd_count, sizeof(cmd_count)));
     if (rc < 0) {
         return rc;
     }
-    rc = write(rpmb_fd, payload, payload_size);
+    rc = TEMP_FAILURE_RETRY(write(rpmb_fd, payload, payload_size));
     if (rc < 0) {
         return rc;
     }
-    rc = read(rpmb_fd, read_buf, read_size);
+    rc = TEMP_FAILURE_RETRY(read(rpmb_fd, read_buf, read_size));
     return rc;
 }
 
@@ -605,7 +620,7 @@ int rpmb_open(const char* rpmb_devname, enum dev_type open_dev_type) {
 
         /* For UFS, it is prudent to check we have a sg device by calling an ioctl */
         if (dev_type == UFS_RPMB) {
-            if ((ioctl(rpmb_fd, SG_GET_VERSION_NUM, &sg_version_num) < 0) ||
+            if ((TEMP_FAILURE_RETRY(ioctl(rpmb_fd, SG_GET_VERSION_NUM, &sg_version_num)) < 0) ||
                 (sg_version_num < RPMB_MIN_SG_VERSION_NUM)) {
                 ALOGE("%s is not a sg device, or old sg driver\n", rpmb_devname);
                 return -1;

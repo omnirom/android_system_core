@@ -15,12 +15,12 @@
  */
 
 #include <modprobe/modprobe.h>
+#include <modprobe/utils.h>
 
 #include <fnmatch.h>
 #include <grp.h>
 #include <pwd.h>
 #include <sys/stat.h>
-#include <sys/syscall.h>
 #include <sys/wait.h>
 
 #include <algorithm>
@@ -30,379 +30,27 @@
 #include <thread>
 #include <vector>
 
-#include <android-base/chrono_utils.h>
 #include <android-base/file.h>
 #include <android-base/logging.h>
 #include <android-base/parseint.h>
 #include <android-base/strings.h>
 #include <android-base/unique_fd.h>
 
-#include "exthandler/exthandler.h"
-
-std::string Modprobe::MakeCanonical(const std::string& module_path) {
-    auto start = module_path.find_last_of('/');
-    if (start == std::string::npos) {
-        start = 0;
-    } else {
-        start += 1;
-    }
-    auto end = module_path.size();
-    if (android::base::EndsWith(module_path, ".ko")) {
-        end -= 3;
-    }
-    if ((end - start) <= 1) {
-        LOG(ERROR) << "malformed module name: " << module_path;
-        return "";
-    }
-    std::string module_name = module_path.substr(start, end - start);
-    // module names can have '-', but their file names will have '_'
-    std::replace(module_name.begin(), module_name.end(), '-', '_');
-    return module_name;
-}
-
-bool Modprobe::ParseDepCallback(const std::string& base_path,
-                                const std::vector<std::string>& args) {
-    std::vector<std::string> deps;
-    std::string prefix = "";
-
-    // Set first item as our modules path
-    std::string::size_type pos = args[0].find(':');
-    if (args[0][0] != '/') {
-        prefix = base_path + "/";
-    }
-    if (pos != std::string::npos) {
-        deps.emplace_back(prefix + args[0].substr(0, pos));
-    } else {
-        LOG(ERROR) << "dependency lines must start with name followed by ':'";
-        return false;
-    }
-
-    // Remaining items are dependencies of our module
-    for (auto arg = args.begin() + 1; arg != args.end(); ++arg) {
-        if ((*arg)[0] != '/') {
-            prefix = base_path + "/";
-        } else {
-            prefix = "";
-        }
-        deps.push_back(prefix + *arg);
-    }
-
-    std::string canonical_name = MakeCanonical(args[0].substr(0, pos));
-    if (canonical_name.empty()) {
-        return false;
-    }
-    this->module_deps_[canonical_name] = deps;
-
-    return true;
-}
-
-bool Modprobe::ParseAliasCallback(const std::vector<std::string>& args) {
-    auto it = args.begin();
-    const std::string& type = *it++;
-
-    if (type != "alias") {
-        LOG(ERROR) << "non-alias line encountered in modules.alias, found " << type;
-        return false;
-    }
-
-    if (args.size() != 3) {
-        LOG(ERROR) << "alias lines in modules.alias must have 3 entries, not " << args.size();
-        return false;
-    }
-
-    const std::string& alias = *it++;
-    const std::string& module_name = *it++;
-    this->module_aliases_.emplace_back(alias, module_name);
-
-    return true;
-}
-
-bool Modprobe::ParseSoftdepCallback(const std::vector<std::string>& args) {
-    auto it = args.begin();
-    const std::string& type = *it++;
-    std::string state = "";
-
-    if (type != "softdep") {
-        LOG(ERROR) << "non-softdep line encountered in modules.softdep, found " << type;
-        return false;
-    }
-
-    if (args.size() < 4) {
-        LOG(ERROR) << "softdep lines in modules.softdep must have at least 4 entries";
-        return false;
-    }
-
-    const std::string& module = *it++;
-    while (it != args.end()) {
-        const std::string& token = *it++;
-        if (token == "pre:" || token == "post:") {
-            state = token;
-            continue;
-        }
-        if (state == "") {
-            LOG(ERROR) << "malformed modules.softdep at token " << token;
-            return false;
-        }
-        if (state == "pre:") {
-            this->module_pre_softdep_.emplace_back(module, token);
-        } else {
-            this->module_post_softdep_.emplace_back(module, token);
-        }
-    }
-
-    return true;
-}
-
-bool Modprobe::ParseLoadCallback(const std::vector<std::string>& args) {
-    auto it = args.begin();
-    const std::string& module = *it++;
-
-    const std::string& canonical_name = MakeCanonical(module);
-    if (canonical_name.empty()) {
-        return false;
-    }
-    this->module_load_.emplace_back(canonical_name);
-
-    return true;
-}
-
-bool Modprobe::ParseOptionsCallback(const std::vector<std::string>& args) {
-    auto it = args.begin();
-    const std::string& type = *it++;
-
-    if (type == "dyn_options") {
-        return ParseDynOptionsCallback(std::vector<std::string>(it, args.end()));
-    }
-
-    if (type != "options") {
-        LOG(ERROR) << "non-options line encountered in modules.options";
-        return false;
-    }
-
-    if (args.size() < 2) {
-        LOG(ERROR) << "lines in modules.options must have at least 2 entries, not " << args.size();
-        return false;
-    }
-
-    const std::string& module = *it++;
-    std::string options = "";
-
-    const std::string& canonical_name = MakeCanonical(module);
-    if (canonical_name.empty()) {
-        return false;
-    }
-
-    while (it != args.end()) {
-        options += *it++;
-        if (it != args.end()) {
-            options += " ";
-        }
-    }
-
-    auto [unused, inserted] = this->module_options_.emplace(canonical_name, options);
-    if (!inserted) {
-        LOG(ERROR) << "multiple options lines present for module " << module;
-        return false;
-    }
-    return true;
-}
-
-bool Modprobe::ParseDynOptionsCallback(const std::vector<std::string>& args) {
-    auto it = args.begin();
-    int arg_size = 3;
-
-    if (args.size() < arg_size) {
-        LOG(ERROR) << "dyn_options lines in modules.options must have at least" << arg_size
-                   << " entries, not " << args.size();
-        return false;
-    }
-
-    const std::string& module = *it++;
-
-    const std::string& canonical_name = MakeCanonical(module);
-    if (canonical_name.empty()) {
-        return false;
-    }
-
-    const std::string& pwnam = *it++;
-    passwd* pwd = getpwnam(pwnam.c_str());
-    if (!pwd) {
-        LOG(ERROR) << "invalid handler uid'" << pwnam << "'";
-        return false;
-    }
-
-    std::string handler_with_args =
-            android::base::Join(std::vector<std::string>(it, args.end()), ' ');
-    handler_with_args.erase(std::remove(handler_with_args.begin(), handler_with_args.end(), '\"'),
-                            handler_with_args.end());
-
-    LOG(DEBUG) << "Launching external module options handler: '" << handler_with_args
-               << " for module: " << module;
-
-    // There is no need to set envs for external module options handler - pass
-    // empty map.
-    std::unordered_map<std::string, std::string> envs_map;
-    auto result = RunExternalHandler(handler_with_args, pwd->pw_uid, 0, envs_map);
-    if (!result.ok()) {
-        LOG(ERROR) << "External module handler failed: " << result.error();
-        return false;
-    }
-
-    LOG(INFO) << "Dynamic options for module: " << module << " are '" << *result << "'";
-
-    auto [unused, inserted] = this->module_options_.emplace(canonical_name, *result);
-    if (!inserted) {
-        LOG(ERROR) << "multiple options lines present for module " << module;
-        return false;
-    }
-    return true;
-}
-
-bool Modprobe::ParseBlocklistCallback(const std::vector<std::string>& args) {
-    auto it = args.begin();
-    const std::string& type = *it++;
-
-    if (type != "blocklist") {
-        LOG(ERROR) << "non-blocklist line encountered in modules.blocklist";
-        return false;
-    }
-
-    if (args.size() != 2) {
-        LOG(ERROR) << "lines in modules.blocklist must have exactly 2 entries, not " << args.size();
-        return false;
-    }
-
-    const std::string& module = *it++;
-
-    const std::string& canonical_name = MakeCanonical(module);
-    if (canonical_name.empty()) {
-        return false;
-    }
-    this->module_blocklist_.emplace(canonical_name);
-
-    return true;
-}
-
-void Modprobe::ParseCfg(const std::string& cfg,
-                        std::function<bool(const std::vector<std::string>&)> f) {
-    std::string cfg_contents;
-    if (!android::base::ReadFileToString(cfg, &cfg_contents, false)) {
-        return;
-    }
-
-    std::vector<std::string> lines = android::base::Split(cfg_contents, "\n");
-    for (const auto& line : lines) {
-        if (line.empty() || line[0] == '#') {
-            continue;
-        }
-        const std::vector<std::string> args = android::base::Split(line, " ");
-        if (args.empty()) continue;
-        f(args);
-    }
-    return;
-}
-
-void Modprobe::AddOption(const std::string& module_name, const std::string& option_name,
-                         const std::string& value) {
-    auto canonical_name = MakeCanonical(module_name);
-    auto options_iter = module_options_.find(canonical_name);
-    auto option_str = option_name + "=" + value;
-    if (options_iter != module_options_.end()) {
-        options_iter->second = options_iter->second + " " + option_str;
-    } else {
-        module_options_.emplace(canonical_name, option_str);
-    }
-}
-
-void Modprobe::ParseKernelCmdlineOptions(void) {
-    std::string cmdline = GetKernelCmdline();
-    std::string module_name = "";
-    std::string option_name = "";
-    std::string value = "";
-    bool in_module = true;
-    bool in_option = false;
-    bool in_value = false;
-    bool in_quotes = false;
-    int start = 0;
-
-    for (int i = 0; i < cmdline.size(); i++) {
-        if (cmdline[i] == '"') {
-            in_quotes = !in_quotes;
-        }
-
-        if (in_quotes) continue;
-
-        if (cmdline[i] == ' ') {
-            if (in_value) {
-                value = cmdline.substr(start, i - start);
-                if (!module_name.empty() && !option_name.empty()) {
-                    AddOption(module_name, option_name, value);
-                }
-            }
-            module_name = "";
-            option_name = "";
-            value = "";
-            in_value = false;
-            start = i + 1;
-            in_module = true;
-            continue;
-        }
-
-        if (cmdline[i] == '.') {
-            if (in_module) {
-                module_name = cmdline.substr(start, i - start);
-                start = i + 1;
-                in_module = false;
-            }
-            in_option = true;
-            continue;
-        }
-
-        if (cmdline[i] == '=') {
-            if (in_option) {
-                option_name = cmdline.substr(start, i - start);
-                start = i + 1;
-                in_option = false;
-            }
-            in_value = true;
-            continue;
-        }
-    }
-    if (in_value && !in_quotes) {
-        value = cmdline.substr(start, cmdline.size() - start);
-        if (!module_name.empty() && !option_name.empty()) {
-            AddOption(module_name, option_name, value);
-        }
-    }
-}
+using android::modprobe::CanonicalizeModulePath;
 
 Modprobe::Modprobe(const std::vector<std::string>& base_paths, const std::string load_file,
                    bool use_blocklist)
-    : blocklist_enabled(use_blocklist) {
-    using namespace std::placeholders;
+    : Modprobe(ModuleConfig::Parse(base_paths, load_file), use_blocklist) {}
 
-    for (const auto& base_path : base_paths) {
-        auto alias_callback = std::bind(&Modprobe::ParseAliasCallback, this, _1);
-        ParseCfg(base_path + "/modules.alias", alias_callback);
-
-        auto dep_callback = std::bind(&Modprobe::ParseDepCallback, this, base_path, _1);
-        ParseCfg(base_path + "/modules.dep", dep_callback);
-
-        auto softdep_callback = std::bind(&Modprobe::ParseSoftdepCallback, this, _1);
-        ParseCfg(base_path + "/modules.softdep", softdep_callback);
-
-        auto load_callback = std::bind(&Modprobe::ParseLoadCallback, this, _1);
-        ParseCfg(base_path + "/" + load_file, load_callback);
-
-        auto options_callback = std::bind(&Modprobe::ParseOptionsCallback, this, _1);
-        ParseCfg(base_path + "/modules.options", options_callback);
-
-        auto blocklist_callback = std::bind(&Modprobe::ParseBlocklistCallback, this, _1);
-        ParseCfg(base_path + "/modules.blocklist", blocklist_callback);
-    }
-
-    ParseKernelCmdlineOptions();
-}
+Modprobe::Modprobe(ModuleConfig config, bool use_blocklist)
+    : module_aliases_(std::move(config.module_aliases)),
+      module_deps_(std::move(config.module_deps)),
+      module_pre_softdep_(std::move(config.module_pre_softdep)),
+      module_post_softdep_(std::move(config.module_post_softdep)),
+      module_load_(std::move(config.module_load)),
+      module_options_(std::move(config.module_options)),
+      module_blocklist_(std::move(config.module_blocklist)),
+      blocklist_enabled(use_blocklist) {}
 
 std::vector<std::string> Modprobe::GetDependencies(const std::string& module) {
     auto it = module_deps_.find(module);
@@ -458,21 +106,24 @@ bool Modprobe::InsmodWithDeps(const std::string& module_name, const std::string&
 
 bool Modprobe::LoadWithAliases(const std::string& module_name, bool strict,
                                const std::string& parameters) {
-    auto canonical_name = MakeCanonical(module_name);
-    if (module_loaded_.count(canonical_name)) {
-        return true;
-    }
-
-    std::set<std::string> modules_to_load = {canonical_name};
+    std::set<std::string> modules_to_load;
     bool module_loaded = false;
+    {
+        std::lock_guard guard(module_loaded_lock_);
 
-    // use aliases to expand list of modules to load (multiple modules
-    // may alias themselves to the requested name)
-    for (const auto& [alias, aliased_module] : module_aliases_) {
-        if (fnmatch(alias.c_str(), module_name.c_str(), 0) != 0) continue;
-        LOG(VERBOSE) << "Found alias for '" << module_name << "': '" << aliased_module;
-        if (module_loaded_.count(MakeCanonical(aliased_module))) continue;
-        modules_to_load.emplace(aliased_module);
+        auto canonical_name = CanonicalizeModulePath(module_name);
+        if (module_loaded_.count(canonical_name)) {
+            return true;
+        }
+        modules_to_load.insert(std::move(canonical_name));
+        // use aliases to expand list of modules to load (multiple modules
+        // may alias themselves to the requested name)
+        for (const auto& [alias, aliased_module] : module_aliases_) {
+            if (fnmatch(alias.c_str(), module_name.c_str(), 0) != 0) continue;
+            LOG(VERBOSE) << "Found alias for '" << module_name << "': '" << aliased_module;
+            if (module_loaded_.count(CanonicalizeModulePath(aliased_module))) continue;
+            modules_to_load.emplace(aliased_module);
+        }
     }
 
     // attempt to load all modules aliased to this name
@@ -492,10 +143,10 @@ bool Modprobe::LoadWithAliases(const std::string& module_name, bool strict,
 bool Modprobe::IsBlocklisted(const std::string& module_name) {
     if (!blocklist_enabled) return false;
 
-    auto canonical_name = MakeCanonical(module_name);
+    auto canonical_name = CanonicalizeModulePath(module_name);
     auto dependencies = GetDependencies(canonical_name);
     for (auto dep = dependencies.begin(); dep != dependencies.end(); ++dep) {
-        if (module_blocklist_.count(MakeCanonical(*dep))) return true;
+        if (module_blocklist_.count(CanonicalizeModulePath(*dep))) return true;
     }
 
     return module_blocklist_.count(canonical_name) > 0;
@@ -517,13 +168,13 @@ bool Modprobe::LoadModulesParallel(int num_threads) {
             LOG(VERBOSE) << "LMP: Blocklist: Module " << module << " skipping...";
             continue;
         }
-        auto dependencies = GetDependencies(MakeCanonical(module));
+        auto dependencies = GetDependencies(CanonicalizeModulePath(module));
         if (dependencies.empty()) {
             LOG(ERROR) << "LMP: Hard-dep: Module " << module
                        << " not in .dep file";
             return false;
         }
-        mod_with_deps[MakeCanonical(module)] = dependencies;
+        mod_with_deps[CanonicalizeModulePath(module)] = dependencies;
     }
 
     while (!mod_with_deps.empty()) {
@@ -537,7 +188,7 @@ bool Modprobe::LoadModulesParallel(int num_threads) {
             if (itd_last == it_dep.rend())
                 continue;
 
-            auto cnd_last = MakeCanonical(*itd_last);
+            auto cnd_last = CanonicalizeModulePath(*itd_last);
             // Hard-dependencies cannot be blocklisted
             if (IsBlocklisted(cnd_last)) {
                 LOG(ERROR) << "LMP: Blocklist: Module-dep " << cnd_last
@@ -620,7 +271,7 @@ bool Modprobe::LoadListedModules(bool strict) {
 }
 
 bool Modprobe::Remove(const std::string& module_name) {
-    auto dependencies = GetDependencies(MakeCanonical(module_name));
+    auto dependencies = GetDependencies(CanonicalizeModulePath(module_name));
     for (auto dep = dependencies.begin(); dep != dependencies.end(); ++dep) {
         Rmmod(*dep);
     }
@@ -645,7 +296,7 @@ bool Modprobe::GetAllDependencies(const std::string& module,
                                   std::vector<std::string>* pre_dependencies,
                                   std::vector<std::string>* dependencies,
                                   std::vector<std::string>* post_dependencies) {
-    std::string canonical_name = MakeCanonical(module);
+    std::string canonical_name = CanonicalizeModulePath(module);
     if (pre_dependencies) {
         pre_dependencies->clear();
         for (const auto& [it_module, it_softdep] : module_pre_softdep_) {

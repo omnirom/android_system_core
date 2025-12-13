@@ -34,7 +34,7 @@ class SnapshotManagerStub : public ISnapshotManager {
     UpdateState ProcessUpdateState(const std::function<bool()>& callback = {},
                                    const std::function<bool()>& before_cancel = {}) override;
     UpdateState GetUpdateState(double* progress = nullptr) override;
-    bool UpdateUsesCompression() override;
+    bool UpdateUsesSnapuserd() override;
     bool UpdateUsesUserSnapshots() override;
     Return CreateUpdateSnapshots(
             const chromeos_update_engine::DeltaArchiveManifest& manifest) override;

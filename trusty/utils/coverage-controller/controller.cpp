@@ -176,7 +176,7 @@ int main(int argc, char* argv[]) {
         optarg = argv[optind];
     }
     if (optarg.size()==0) {
-        optarg = "data/local/tmp";
+        optarg = "data/vendor/trusty/coverage";
     }
 
     android::trusty::controller::Controller cur;

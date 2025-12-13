@@ -62,6 +62,7 @@ using ::testing::TestWithParam;
 struct TestParam {
     bool io_uring;
     bool o_direct;
+    bool ublk;
     std::string compression;
     int block_size;
     int num_threads;
@@ -729,12 +730,12 @@ void SnapuserdTest::CreateCowDeviceOrderedOps() {
 void SnapuserdTest::InitCowDevice() {
     auto factory = harness_->GetBlockServerFactory();
     auto opener = factory->CreateOpener(system_device_ctrl_name_);
-    handlers_->DisableVerification();
     const TestParam params = GetParam();
     HandlerOptions options = {
-            .num_worker_threads = params.num_threads,
+            .num_worker_threads = 1,
             .use_iouring = params.io_uring,
             .o_direct = params.o_direct,
+            .skip_verification = true,
             .cow_op_merge_size = params.cow_op_merge_size,
             .verify_block_size = params.verification_block_size,
             .num_verification_threads = params.num_verification_threads,
@@ -1282,7 +1283,7 @@ void HandlerTest::InitializeDevice() {
 
     const TestParam params = GetParam();
     HandlerOptions options = {
-            .num_worker_threads = params.num_threads,
+            .num_worker_threads = 1,
             .use_iouring = params.io_uring,
             .o_direct = params.o_direct,
             .cow_op_merge_size = params.cow_op_merge_size,

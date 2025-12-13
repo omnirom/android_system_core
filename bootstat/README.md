@@ -17,7 +17,7 @@ analysis.
 ## Relative time ##
 
 The timestamp recorded by bootstat is the uptime of the system, i.e., the
-number of seconds since the system booted.
+number of milliseconds since the system booted.
 
 ## Recording boot events ##
 

@@ -14,34 +14,51 @@
  * limitations under the License.
  */
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include <utils/StrongPointer.h>
+#include <utils/AllocatorTracker.h>
 #include <utils/RefBase.h>
+#include <utils/StrongPointer.h>
 
-#include <thread>
-#include <atomic>
-#include <sched.h>
 #include <errno.h>
+#include <sched.h>
+#include <atomic>
+#include <thread>
 
 // Enhanced version of StrongPointer_test, but using RefBase underneath.
 
 using namespace android;
+using ::testing::_;
 
 static constexpr int NITERS = 500000;
 
 static constexpr int INITIAL_STRONG_VALUE = 1 << 28;  // Mirroring RefBase definition.
 
 class Foo : public RefBase {
-public:
-    Foo(bool* deleted_check) : mDeleted(deleted_check) {
+  public:
+    Foo(bool* deleted_check) : mDeleted(deleted_check) { *mDeleted = false; }
+
+    ~Foo() { *mDeleted = true; }
+
+  private:
+    bool* mDeleted;
+};
+
+class DoNothingNoVirtualDestructor : public RefBase {
+  public:
+    DoNothingNoVirtualDestructor() = default;
+    ~DoNothingNoVirtualDestructor() = default;
+};
+
+class FooDerived : public DoNothingNoVirtualDestructor {
+  public:
+    FooDerived(bool* deleted_check) : DoNothingNoVirtualDestructor(), mDeleted(deleted_check) {
         *mDeleted = false;
     }
+    ~FooDerived() { *mDeleted = true; }
 
-    ~Foo() {
-        *mDeleted = true;
-    }
-private:
+  private:
     bool* mDeleted;
 };
 
@@ -82,6 +99,29 @@ private:
 
 int FooFixedAlloc::mAllocCount(0);
 void* FooFixedAlloc::theMemory(nullptr);
+
+#ifdef ANDROID_UTILS_CUSTOM_ALLOCATOR
+// A simple allocator that can be used to check that the allocator is being
+// called when expected.
+class TestAllocator : public Allocator {
+  public:
+    TestAllocator() {
+        ON_CALL(*this, allocate(_, _)).WillByDefault([](size_t size, size_t) {
+            return malloc(size);
+        });
+        ON_CALL(*this, reallocate(_, _)).WillByDefault([](void* ptr, size_t size) {
+            return realloc(ptr, size);
+        });
+        ON_CALL(*this, deallocate(_)).WillByDefault([](void* ptr) { free(ptr); });
+        ON_CALL(*this, abort()).WillByDefault([]() { std::abort(); });
+    }
+
+    MOCK_METHOD(void*, allocate, (size_t size, size_t alignment), (override));
+    MOCK_METHOD(void*, reallocate, (void* ptr, size_t size), (override));
+    MOCK_METHOD(void, deallocate, (void* ptr), (override));
+    MOCK_METHOD(void, abort, (), (override));
+};
+#endif  // ANDROID_UTILS_CUSTOM_ALLOCATOR
 
 TEST(RefBase, StrongMoves) {
     bool isDeleted;
@@ -149,8 +189,8 @@ TEST(RefBase, Comparisons) {
     ASSERT_FALSE(sp1 == sp2);
     ASSERT_TRUE(sp1 != sp2);
     bool sp1_smaller = sp1 < sp2;
-    wp<Foo>wp_smaller = sp1_smaller ? wp1 : wp3;
-    wp<Foo>wp_larger = sp1_smaller ? wp3 : wp1;
+    wp<Foo> wp_smaller = sp1_smaller ? wp1 : wp3;
+    wp<Foo> wp_larger = sp1_smaller ? wp3 : wp1;
     ASSERT_TRUE(wp_smaller < wp_larger);
     ASSERT_TRUE(wp_smaller != wp_larger);
     ASSERT_TRUE(wp_smaller <= wp_larger);
@@ -476,3 +516,75 @@ TEST(RefBase, RacingPromotions) {
         ASSERT_EQ(NITERS, deleteCount) << "Deletions missed!";
     }  // Otherwise this is slow and probably pointless on a uniprocessor.
 }
+
+#ifdef ANDROID_UTILS_CUSTOM_ALLOCATOR
+
+TEST(RefBase, CustomAllocator) {
+    TestAllocator allocator;  // Use the mock allocator
+    android::AllocatorTracker::getInstance().setAllocator(&allocator);
+
+    bool isDeleted = false;
+    // The underlying pointer will be allocated then the refs will be allocated.
+    void* allocated_ptrs[2] = {nullptr, nullptr};
+
+    // Expect DoAllocate to be called once when creating the object
+    EXPECT_CALL(allocator, allocate(_, _))
+            .Times(2)
+            .WillRepeatedly([&allocated_ptrs](size_t size, size_t) {
+                void* ptr = malloc(size);
+                if (allocated_ptrs[0] == nullptr) {
+                    allocated_ptrs[0] = ptr;
+                } else {
+                    allocated_ptrs[1] = ptr;
+                }
+                return ptr;
+            });
+
+    sp<Foo> foo = sp<Foo>::make(&isDeleted);
+    EXPECT_FALSE(isDeleted);
+
+    // Expect deallocate to be called twice when the object is deleted -
+    // refs first then the pointer.
+    EXPECT_CALL(allocator, deallocate(allocated_ptrs[1]));
+    EXPECT_CALL(allocator, deallocate(allocated_ptrs[0]));
+
+    foo = nullptr;
+    EXPECT_TRUE(isDeleted);
+    android::AllocatorTracker::getInstance().setAllocator(nullptr);
+}
+
+TEST(RefBase, CustomAllocatorCallsRightDestructor) {
+    TestAllocator allocator;  // Use the mock allocator
+    android::AllocatorTracker::getInstance().setAllocator(&allocator);
+
+    bool isDeleted = false;
+    // The underlying pointer will be allocated then the refs will be allocated.
+    void* allocated_ptrs[2] = {nullptr, nullptr};
+
+    // Expect allocate to be called once when creating the object
+    EXPECT_CALL(allocator, allocate(_, _))
+            .Times(2)
+            .WillRepeatedly([&allocated_ptrs](size_t size, size_t) {
+                void* ptr = malloc(size);
+                if (allocated_ptrs[0] == nullptr) {
+                    allocated_ptrs[0] = ptr;
+                } else {
+                    allocated_ptrs[1] = ptr;
+                }
+                return ptr;
+            });
+
+    sp<FooDerived> foo = sp<FooDerived>::make(&isDeleted);
+    EXPECT_FALSE(isDeleted);
+
+    // Expect deallocate to be called twice when the object is deleted -
+    // refs first then the pointer.
+    EXPECT_CALL(allocator, deallocate(allocated_ptrs[1]));
+    EXPECT_CALL(allocator, deallocate(allocated_ptrs[0]));
+    foo = nullptr;
+    EXPECT_TRUE(isDeleted);
+
+    android::AllocatorTracker::getInstance().setAllocator(nullptr);
+}
+
+#endif  // ANDROID_UTILS_CUSTOM_ALLOCATOR

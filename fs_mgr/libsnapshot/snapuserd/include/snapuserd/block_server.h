@@ -18,6 +18,8 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
+#include "snapuserd_common.h"
 
 namespace android {
 namespace snapshot {
@@ -86,9 +88,17 @@ class IBlockServerOpener {
 class IBlockServerFactory {
   public:
     virtual ~IBlockServerFactory() {}
-
+    // Let some implementations provide their own CreateDevice()
+    virtual bool CreateDevice(const std::string& deviceName, uint64_t num_sectors,
+                              int num_queues) = 0;
     // Return a new IBlockServerOpener given a unique device name.
     virtual std::shared_ptr<IBlockServerOpener> CreateOpener(const std::string& misc_name) = 0;
+    // Let the implementations provide the start call so they can manage device state
+    virtual bool StartDevice(const std::string& deviceName) = 0;
+    virtual bool StopDevice(const std::string& deviceName) = 0;
+    virtual std::optional<std::string> GetDeviceName(const std::string& misc_name) = 0;
+    virtual void SetUeventHelper(UeventHelperCallback callback) = 0;
+    virtual UeventHelperCallback GetUeventHelper() = 0;
 };
 
 }  // namespace snapshot

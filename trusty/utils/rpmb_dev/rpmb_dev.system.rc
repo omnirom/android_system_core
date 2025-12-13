@@ -49,7 +49,7 @@ on post-fs && \
     mkdir /mnt/secure_storage_persist_system 0770 system system
     symlink /metadata/secure_storage_persist_system \
             /mnt/secure_storage_persist_system/persist
-    setprop storageproxyd_system.trusty_ipc_dev VSOCK:${trusty.security_vm.vm_cid}:1
+    setprop storageproxyd_system.trusty_ipc_dev VSOCK:${trusty.security_vm.vm_cid}:0
     exec_start rpmb_mock_init_system
     start rpmb_mock_system
 

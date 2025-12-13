@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 The Android Open Source Project
+ * Copyright (C) 2025 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,15 +14,21 @@
  * limitations under the License.
  */
 
-#ifndef _MINI_KEYCTL_MINI_KEYCTL_UTILS_H_
-#define _MINI_KEYCTL_MINI_KEYCTL_UTILS_H_
+#pragma once
 
 #include <string>
+#include <unordered_map>
 
-#include <keyutils.h>
+#include <android-base/result.h>
 
 namespace android {
-key_serial_t GetKeyringId(const std::string& keyring_desc);
-}  // namespace android
+namespace modprobe {
 
-#endif  // _MINI_KEYCTL_MINI_KEYCTL_UTILS_H_
+std::string CanonicalizeModulePath(const std::string& module_path);
+
+base::Result<void> InitModule(const std::string& path_name,
+                              const std::unordered_map<std::string, std::string>& module_options,
+                              const std::string& parameters = "");
+
+}  // namespace modprobe
+}  // namespace android

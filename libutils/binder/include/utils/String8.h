@@ -275,36 +275,44 @@ inline int String8::compare(const String8& other) const
 
 inline bool String8::operator<(const String8& other) const
 {
+    if (mString == other.mString) return false;
     return strcmp(mString, other.mString) < 0;
 }
 
 inline bool String8::operator<=(const String8& other) const
 {
+    if (mString == other.mString) return true;
     return strcmp(mString, other.mString) <= 0;
 }
 
 inline bool String8::operator==(const String8& other) const
 {
+    if (mString == other.mString) return true;
     return strcmp(mString, other.mString) == 0;
 }
 
 inline bool String8::operator!=(const String8& other) const
 {
-    return strcmp(mString, other.mString) != 0;
+    return !operator==(other);
 }
 
 inline bool String8::operator>=(const String8& other) const
 {
+    if (mString == other.mString) return true;
     return strcmp(mString, other.mString) >= 0;
 }
 
 inline bool String8::operator>(const String8& other) const
 {
+    if (mString == other.mString) return false;
     return strcmp(mString, other.mString) > 0;
 }
 
 #if __cplusplus >= 202002L
 inline std::strong_ordering String8::operator<=>(const String8& other) const {
+    if (mString == other.mString) {
+        return std::strong_ordering::equal;
+    }
     int result = strcmp(mString, other.mString);
     if (result == 0) {
         return std::strong_ordering::equal;
@@ -318,36 +326,44 @@ inline std::strong_ordering String8::operator<=>(const String8& other) const {
 
 inline bool String8::operator<(const char* other) const
 {
+    if (mString == other) return false;
     return strcmp(mString, other) < 0;
 }
 
 inline bool String8::operator<=(const char* other) const
 {
+    if (mString == other) return true;
     return strcmp(mString, other) <= 0;
 }
 
 inline bool String8::operator==(const char* other) const
 {
+    if (mString == other) return true;
     return strcmp(mString, other) == 0;
 }
 
 inline bool String8::operator!=(const char* other) const
 {
-    return strcmp(mString, other) != 0;
+    return !operator==(other);
 }
 
 inline bool String8::operator>=(const char* other) const
 {
+    if (mString == other) return true;
     return strcmp(mString, other) >= 0;
 }
 
 inline bool String8::operator>(const char* other) const
 {
+    if (mString == other) return false;
     return strcmp(mString, other) > 0;
 }
 
 #if __cplusplus >= 202002L
 inline std::strong_ordering String8::operator<=>(const char* other) const {
+    if (mString == other) {
+        return std::strong_ordering::equal;
+    }
     int result = strcmp(mString, other);
     if (result == 0) {
         return std::strong_ordering::equal;

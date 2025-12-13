@@ -1,5 +1,5 @@
 service storageproxyd_test_vm /system_ext/bin/storageproxyd.system \
-        -d VSOCK:${trusty.test_vm.vm_cid}:1 \
+        -d VSOCK:${trusty.test_vm.vm_cid}:0 \
         -r /dev/socket/rpmb_mock_test_system \
         -p /data/secure_storage_test_system \
         -t sock
@@ -9,7 +9,7 @@ service storageproxyd_test_vm /system_ext/bin/storageproxyd.system \
     group system
 
 service storageproxyd_test_vm_os /system_ext/bin/storageproxyd.system \
-        -d VSOCK:${trusty.test_vm_os.vm_cid}:1 \
+        -d VSOCK:${trusty.test_vm_os.vm_cid}:0 \
         -r /dev/socket/rpmb_mock_test_system \
         -p /data/secure_storage_test_system \
         -t sock
@@ -55,6 +55,6 @@ on post-fs-data
     symlink /mnt/secure_storage_persist_test_system/persist \
             /data/secure_storage_test_system/persist
     chown root system /data/secure_storage_test_system/persist
-    # setprop storageproxyd_test_system.trusty_ipc_dev VSOCK:${trusty.test_vm.vm_cid}:1
+    # setprop storageproxyd_test_system.trusty_ipc_dev VSOCK:${trusty.test_vm.vm_cid}:0
     exec_start rpmb_mock_init_test_system
     start rpmb_mock_test_system

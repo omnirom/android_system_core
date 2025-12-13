@@ -1,0 +1,18 @@
+aconfig_declarations {
+    name: "libsnapshot_aconfig_declarations",
+    package: "com.android.libsnapshot",
+    container: "system",
+    srcs: [
+        "libsnapshot_flags.aconfig",
+    ],
+}
+
+cc_aconfig_library {
+    name: "libsnapshot_flags_cc_lib",
+    aconfig_declarations: "libsnapshot_aconfig_declarations",
+    host_supported: true,
+    mode: "force-read-only",
+    ramdisk_available: true,
+    recovery_available: true,
+    vendor_ramdisk_available: true,
+}

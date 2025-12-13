@@ -70,7 +70,7 @@ struct VariableHandlers {
 };
 
 static bool IsSnapshotUpdateInProgress(FastbootDevice* device) {
-    auto hal = device->boot1_1();
+    auto hal = device->boot_control_hal();
     if (!hal) {
         return false;
     }
@@ -349,8 +349,8 @@ bool SetActiveHandler(FastbootDevice* device, const std::vector<std::string>& ar
     }
 
     // Check how to handle the current snapshot state.
-    if (auto hal11 = device->boot1_1()) {
-        auto merge_status = hal11->getSnapshotMergeStatus();
+    if (auto hal = device->boot_control_hal()) {
+        auto merge_status = hal->getSnapshotMergeStatus();
         if (merge_status == MergeStatus::MERGING) {
             return device->WriteFail("Cannot change slots while a snapshot update is in progress");
         }
@@ -470,7 +470,7 @@ PartitionBuilder::PartitionBuilder(FastbootDevice* device, const std::string& pa
     : device_(device) {
     std::string slot_suffix = GetSuperSlotSuffix(device, partition_name);
     slot_number_ = android::fs_mgr::SlotNumberForSlotSuffix(slot_suffix);
-    auto super_device = FindPhysicalPartition(fs_mgr_get_super_partition_name(slot_number_));
+    auto super_device = FindPhysicalPartition(fs_mgr_get_super_partition_name());
     if (!super_device) {
         return;
     }
@@ -693,7 +693,7 @@ bool GsiHandler(FastbootDevice* device, const std::vector<std::string>& args) {
 bool SnapshotUpdateHandler(FastbootDevice* device, const std::vector<std::string>& args) {
     // Note that we use the HAL rather than mounting /metadata, since we want
     // our results to match the bootloader.
-    auto hal = device->boot1_1();
+    auto hal = device->boot_control_hal();
     if (!hal) return device->WriteFail("Not supported");
 
     // If no arguments, return the same thing as a getvar. Note that we get the

@@ -174,7 +174,7 @@ static bool ActivateV2CgroupController(const CgroupDescriptor& descriptor) {
 
     if (!Mkdir(controller->path(), descriptor.mode(), descriptor.uid(), descriptor.gid())) {
         LOG(ERROR) << "Failed to create directory for " << controller->name() << " cgroup";
-        return false;
+        return descriptor.controller()->flags() & CGROUPRC_CONTROLLER_FLAG_OPTIONAL;
     }
 
     return ::ActivateControllers(controller->path(), {{controller->name(), descriptor}});
@@ -189,22 +189,19 @@ static bool MountV1CgroupController(const CgroupDescriptor& descriptor) {
         return false;
     }
 
-    // Unfortunately historically cpuset controller was mounted using a mount command
-    // different from all other controllers. This results in controller attributes not
-    // to be prepended with controller name. For example this way instead of
-    // /dev/cpuset/cpuset.cpus the attribute becomes /dev/cpuset/cpus which is what
-    // the system currently expects.
-    int res;
+    std::string options = controller->name();
+
     if (!strcmp(controller->name(), "cpuset")) {
-        // mount cpuset none /dev/cpuset nodev noexec nosuid
-        res = mount("none", controller->path(), controller->name(),
-                    MS_NODEV | MS_NOEXEC | MS_NOSUID, nullptr);
-    } else {
-        // mount cgroup none <path> nodev noexec nosuid <controller>
-        res = mount("none", controller->path(), "cgroup", MS_NODEV | MS_NOEXEC | MS_NOSUID,
-                    controller->name());
+        // Android depends on the noprefix option for cpuset so that cgroupfs files are not prefixed
+        // with the controller name. For example /dev/cpuset/cpus instead of
+        //                                       /dev/cpuset/cpuset.cpus.
+        // cpuset_v2_mode is required to restore the original cpu mask after a cpu is offlined, and
+        // then onlined in cgroup v1.
+        options += ",noprefix,cpuset_v2_mode";
     }
-    if (res != 0) {
+
+    if (mount("none", controller->path(), "cgroup", MS_NODEV | MS_NOEXEC | MS_NOSUID,
+              options.c_str())) {
         if (IsOptionalController(controller)) {
             PLOG(INFO) << "Failed to mount optional controller " << controller->name();
             return true;
@@ -294,8 +291,8 @@ bool CgroupSetup() {
         }
 
         if (!SetupCgroup(descriptor)) {
-            // issue a warning and proceed with the next cgroup
-            LOG(WARNING) << "Failed to setup " << name << " cgroup";
+            LOG(ERROR) << "Failed to setup " << name << " cgroup";
+            return false;
         }
     }
 

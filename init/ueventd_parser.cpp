@@ -178,6 +178,23 @@ Result<void> ParseUeventSocketRcvbufSizeLine(std::vector<std::string>&& args,
     return {};
 }
 
+Result<void> ParseMainLoopMaxWorkers(std::vector<std::string>&& args,
+                                     std::optional<size_t>* max_workers) {
+    if (args.size() != 2) {
+        return Error() << "parallel_ueventd_main_loop_max_workers lines take exactly one parameter";
+    }
+
+    size_t parsed_worker_num;
+    if (!ParseByteCount(args[1], &parsed_worker_num)) {
+        return Error() << "could not parse size '" << args[1]
+                       << "' for parallel_ueventd_main_loop_max_workers";
+    }
+
+    *max_workers = parsed_worker_num;
+
+    return {};
+}
+
 class SubsystemParser : public SectionParser {
   public:
     SubsystemParser(std::vector<Subsystem>* subsystems) : subsystems_(subsystems) {}
@@ -291,6 +308,12 @@ UeventdConfiguration ParseConfig(const std::vector<std::string>& configs) {
     parser.AddSingleLineParser("parallel_restorecon",
                                std::bind(ParseEnabledDisabledLine, _1,
                                          &ueventd_configuration.enable_parallel_restorecon));
+    parser.AddSingleLineParser("parallel_ueventd_main_loop_max_workers",
+                               std::bind(ParseMainLoopMaxWorkers, _1,
+                                         &ueventd_configuration.parallel_main_loop_max_workers));
+    parser.AddSingleLineParser("parallel_ueventd_main_loop",
+                               std::bind(ParseEnabledDisabledLine, _1,
+                                         &ueventd_configuration.enable_parallel_ueventd_main_loop));
 
     for (const auto& config : configs) {
         parser.ParseConfig(config);

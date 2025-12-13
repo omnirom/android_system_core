@@ -68,8 +68,8 @@ std::ostream& operator<<(std::ostream& os, CowOperationV2 const& op) {
         case kCowCompressGz:
             os << "gz, ";
             break;
-        case kCowCompressBrotli:
-            os << "brotli, ";
+        case kCowCompressBrotliUnsupported:
+            os << "brotli, (brotli is deprecated please use zstd, or lz4)";
             break;
         case kCowCompressLz4:
             os << "lz4, ";

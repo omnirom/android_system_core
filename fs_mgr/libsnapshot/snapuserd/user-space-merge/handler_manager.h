@@ -95,9 +95,6 @@ class ISnapshotHandlerManager {
     // Returns whether all snapshots have verified.
     virtual bool GetVerificationStatus() = 0;
 
-    // Disable partition verification
-    virtual void DisableVerification() = 0;
-
     // Pause Merge threads
     virtual void PauseMerge() = 0;
 
@@ -123,7 +120,6 @@ class SnapshotHandlerManager final : public ISnapshotHandlerManager {
     void TerminateMergeThreads() override;
     double GetMergePercentage() override;
     bool GetVerificationStatus() override;
-    void DisableVerification() override { perform_verification_ = false; }
     void PauseMerge() override;
     void ResumeMerge() override;
 
@@ -150,7 +146,6 @@ class SnapshotHandlerManager final : public ISnapshotHandlerManager {
     int num_partitions_merge_complete_ = 0;
     std::queue<std::shared_ptr<HandlerThread>> merge_handlers_;
     android::base::unique_fd monitor_merge_event_fd_;
-    bool perform_verification_ = true;
 };
 
 }  // namespace snapshot

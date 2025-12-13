@@ -22,8 +22,11 @@
 #if !defined(_WIN32)
 #include <sys/ioctl.h>
 #endif
+#include <sys/file.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#include <cerrno>
 
 #include <android-base/file.h>
 #include <android-base/strings.h>
@@ -110,7 +113,21 @@ bool GetBlockDeviceInfo(const std::string& block_device, BlockDeviceInfo* device
 
 unique_fd PartitionOpener::Open(const std::string& partition_name, int flags) const {
     std::string path = GetPartitionAbsolutePath(partition_name);
-    return GetControlFileOrOpen(path.c_str(), flags | O_CLOEXEC);
+    unique_fd fd = GetControlFileOrOpen(path.c_str(), flags | O_CLOEXEC);
+    if (fd < 0) {
+        return {};
+    }
+
+#if !defined(_WIN32)
+    // Acquire a lock.
+    int lock_flags = ((flags & O_RDWR) || (flags & O_WRONLY)) ? LOCK_EX : LOCK_SH;
+    if (TEMP_FAILURE_RETRY(flock(fd.get(), lock_flags)) == -1) {
+        PERROR << __PRETTY_FUNCTION__ << " flock failed on " << path;
+        return {};
+    }
+#endif
+
+    return fd;
 }
 
 bool PartitionOpener::GetInfo(const std::string& partition_name, BlockDeviceInfo* info) const {

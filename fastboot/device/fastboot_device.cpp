@@ -150,14 +150,6 @@ std::string FastbootDevice::GetCurrentSlot() {
     return suffix;
 }
 
-BootControlClient* FastbootDevice::boot1_1() const {
-    if (boot_control_hal_ &&
-        boot_control_hal_->GetVersion() >= android::hal::BootControlVersion::BOOTCTL_V1_1) {
-        return boot_control_hal_.get();
-    }
-    return nullptr;
-}
-
 bool FastbootDevice::WriteStatus(FastbootResult result, const std::string& message) {
     constexpr size_t kResponseReasonSize = 4;
     constexpr size_t kNumResponseTypes = 4;  // "FAIL", "OKAY", "INFO", "DATA"

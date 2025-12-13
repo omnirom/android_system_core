@@ -69,5 +69,16 @@ std::string DmTable::Serialize() const {
     return table;
 }
 
+std::string DmTable::DebugString() const {
+    std::string debug_info;
+    for (const auto& target : targets_) {
+        if (!debug_info.empty()) {
+            debug_info += ";";
+        }
+        debug_info += target->DebugString();
+    }
+    return debug_info;
+}
+
 }  // namespace dm
 }  // namespace android

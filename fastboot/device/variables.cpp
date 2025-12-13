@@ -451,10 +451,9 @@ bool GetHardwareRevision(FastbootDevice* /* device */, const std::vector<std::st
     return true;
 }
 
-bool GetSuperPartitionName(FastbootDevice* device, const std::vector<std::string>& /* args */,
+bool GetSuperPartitionName(FastbootDevice* /* device */, const std::vector<std::string>& /* args */,
                            std::string* message) {
-    uint32_t slot_number = SlotNumberForSlotSuffix(device->GetCurrentSlot());
-    *message = fs_mgr_get_super_partition_name(slot_number);
+    *message = fs_mgr_get_super_partition_name();
     return true;
 }
 
@@ -462,7 +461,7 @@ bool GetSnapshotUpdateStatus(FastbootDevice* device, const std::vector<std::stri
                              std::string* message) {
     // Note that we use the HAL rather than mounting /metadata, since we want
     // our results to match the bootloader.
-    auto hal = device->boot1_1();
+    auto hal = device->boot_control_hal();
     if (!hal) {
         *message = "not supported";
         return false;

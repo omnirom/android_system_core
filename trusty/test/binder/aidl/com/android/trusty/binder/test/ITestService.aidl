@@ -22,6 +22,7 @@ import com.android.trusty.binder.test.LongEnum;
 
 interface ITestService {
     const @utf8InCpp String PORT = "com.android.trusty.binder.test.service";
+    const @utf8InCpp String HND_PORT = "com.android.trusty.binder.test.handover";
 
     const int TEST_CONSTANT = 42;
     const int TEST_CONSTANT2 = -42;
@@ -67,4 +68,7 @@ interface ITestService {
     ByteEnum[] ReverseByteEnum(in ByteEnum[] input, out ByteEnum[] repeated);
     IntEnum[] ReverseIntEnum(in IntEnum[] input, out IntEnum[] repeated);
     LongEnum[] ReverseLongEnum(in LongEnum[] input, out LongEnum[] repeated);
+
+    // Test that we can pass connections.
+    void Handover(in ParcelFileDescriptor handle);
 }

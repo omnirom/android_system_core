@@ -67,9 +67,6 @@ cc_binary {
     name: "bootstat",
     defaults: ["bootstat_defaults"],
     static_libs: ["libbootstat"],
-    shared_libs: [
-        "libstatslog"
-    ],
     init_rc: ["bootstat.rc"],
     product_variables: {
         debuggable: {
@@ -77,6 +74,15 @@ cc_binary {
         },
     },
     srcs: ["bootstat.cpp"],
+    generated_sources: [
+        "statslog_bootstats.cpp",
+    ],
+    generated_headers: [
+        "statslog_bootstats.h",
+    ],
+    shared_libs: [
+        "libstatssocket",
+    ],
 }
 
 // Native tests
@@ -97,4 +103,31 @@ cc_test {
     test_options: {
         unit_test: true,
     },
+}
+
+// StatsD atom logging
+//------------------------------------------------------------------------------
+genrule {
+    name: "statslog_bootstats.h",
+    tools: ["stats-log-api-gen"],
+    cmd: "$(location stats-log-api-gen)" +
+        " --header $(genDir)/statslog_bootstats.h" +
+        " --module bootstats" +
+        " --namespace android,util,bootstats",
+    out: [
+        "statslog_bootstats.h",
+    ],
+}
+
+genrule {
+    name: "statslog_bootstats.cpp",
+    tools: ["stats-log-api-gen"],
+    cmd: "$(location stats-log-api-gen)" +
+        " --cpp $(genDir)/statslog_bootstats.cpp" +
+        " --module bootstats" +
+        " --namespace android,util,bootstats" +
+        " --importHeader statslog_bootstats.h",
+    out: [
+        "statslog_bootstats.cpp",
+    ],
 }

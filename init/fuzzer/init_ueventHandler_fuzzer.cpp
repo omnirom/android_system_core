@@ -104,7 +104,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                         firmware_directories.push_back(fdp.ConsumeRandomLengthString(kMaxBytes));
                     }
                     FirmwareHandler firmware_handler =
-                            FirmwareHandler(firmware_directories, external_handlers);
+                            FirmwareHandler(firmware_directories, external_handlers,
+                                            /*serial_handler_after_coldboot=*/false);
                     Uevent uevent = CreateUevent(&fdp);
                     if (fdp.ConsumeBool() && uevent.path.size() != 0 &&
                         uevent.path.find(kPath) == 0) {

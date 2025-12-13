@@ -488,8 +488,7 @@ TEST_P(CompressionTest, HorribleStream) {
     ASSERT_EQ(buffer, expected);
 }
 
-INSTANTIATE_TEST_SUITE_P(AllCompressors, CompressionTest,
-                         testing::Values("none", "gz", "brotli", "lz4"));
+INSTANTIATE_TEST_SUITE_P(AllCompressors, CompressionTest, testing::Values("none", "gz", "lz4"));
 
 TEST_F(CowTest, ClusterCompressGz) {
     CowOptions options;
@@ -1402,8 +1401,8 @@ TEST_F(CowTest, RevMergeOpItrTest) {
 TEST_F(CowTest, ParseOptionsTest) {
     CowOptions options;
     std::vector<std::pair<std::string, bool>> testcases = {
-            {"gz,4", true},   {"gz,4,4", false}, {"lz4,4", true}, {"brotli,4", true},
-            {"zstd,4", true}, {"zstd,x", false}, {"zs,4", false}, {"zstd.4", false}};
+            {"gz,4", true},    {"gz,4,4", false}, {"lz4,4", true},  {"zstd,4", true},
+            {"zstd,x", false}, {"zs,4", false},   {"zstd.4", false}};
     for (size_t i = 0; i < testcases.size(); i++) {
         options.compression = testcases[i].first;
         CowWriterV2 writer(options, GetCowFd());

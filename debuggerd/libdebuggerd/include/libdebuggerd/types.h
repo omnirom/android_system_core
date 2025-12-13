@@ -34,6 +34,7 @@ struct ThreadInfo {
 
   pid_t pid;
 
+  std::string executable_name;
   std::vector<std::string> command_line;
   std::string selinux_label;
 

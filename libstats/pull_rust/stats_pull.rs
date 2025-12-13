@@ -121,7 +121,7 @@ unsafe extern "C" fn callback_wrapper(
         let map = COOKIES.lock().unwrap();
         let cb = map.get(&atom_tag);
         match cb {
-            None => log::error!("No callback found for {}", atom_tag),
+            None => log::error!("No callback found for {atom_tag}"),
             Some(cb) => {
                 let stats = cb();
                 let result = stats
@@ -133,7 +133,7 @@ unsafe extern "C" fn callback_wrapper(
                     Ok(_) => {
                         return AStatsManager_PULL_SUCCESS as AStatsManager_PullAtomCallbackReturn
                     }
-                    _ => log::error!("Error adding astats events: {:?}", result),
+                    _ => log::error!("Error adding astats events: {result:?}"),
                 }
             }
         }

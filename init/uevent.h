@@ -35,6 +35,7 @@ struct Uevent {
     int partition_num;
     int major;
     int minor;
+    long long seqnum;
 };
 
 }  // namespace init

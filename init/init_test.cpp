@@ -175,6 +175,35 @@ execute_third
     EXPECT_EQ(3, num_executed);
 }
 
+TEST(init, IgnoreDuplicateService) {
+    std::string init_script = R"init(
+service A something
+    class first
+    user nobody
+
+service A something
+    class second
+    user nobody
+
+# parser should keep parsing
+service B /path/to/B
+    user nobody
+
+)init";
+
+    ActionManager action_manager;
+    ServiceList service_list;
+    TestInitText(init_script, BuiltinFunctionMap(), {}, &action_manager, &service_list);
+
+    auto service_a = service_list.FindService("A");
+    ASSERT_NE(nullptr, service_a);
+    EXPECT_EQ(std::set<std::string>({"first"}), service_a->classnames());
+
+    auto service_b = service_list.FindService("B");
+    ASSERT_NE(nullptr, service_b);
+    EXPECT_EQ(std::vector<std::string>({"/path/to/B"}), service_b->args());
+}
+
 TEST(init, OverrideService) {
     std::string init_script = R"init(
 service A something

@@ -142,14 +142,14 @@ inline ErrorIgnoreEnoent ErrnoErrorIgnoreEnoent() {
     return ErrorIgnoreEnoent(errno);
 }
 
-std::vector<std::string> late_import_paths;
+[[clang::no_destroy]] std::vector<std::string> late_import_paths;
 
 static constexpr std::chrono::nanoseconds kCommandRetryTimeout = 5s;
 
 static Result<void> reboot_into_recovery(const std::vector<std::string>& options) {
     LOG(ERROR) << "Rebooting into recovery";
     std::string err;
-    if (!write_bootloader_message(options, &err)) {
+    if (!IsMicrodroid() && !write_bootloader_message(options, &err)) {
         return Error() << "Failed to set bootloader message: " << err;
     }
     trigger_shutdown("reboot,recovery");
@@ -1187,14 +1187,6 @@ static Result<void> GenerateLinkerConfiguration() {
         return ErrnoError() << "failed to execute linkerconfig";
     }
 
-    auto current_mount_ns = GetCurrentMountNamespace();
-    if (!current_mount_ns.ok()) {
-        return current_mount_ns.error();
-    }
-    if (*current_mount_ns == NS_DEFAULT) {
-        SetDefaultMountNamespaceReady();
-    }
-
     LOG(INFO) << "linkerconfig generated " << linkerconfig_target
               << " with mounted APEX modules info";
 
@@ -1214,9 +1206,6 @@ static Result<void> MountLinkerConfigForDefaultNamespace() {
 
     return {};
 }
-static Result<void> do_update_linker_config(const BuiltinArguments&) {
-    return GenerateLinkerConfiguration();
-}
 
 /*
  * Creates a directory under /data/misc/apexdata/ for each APEX.
@@ -1233,30 +1222,34 @@ static void create_apex_data_dirs() {
 }
 
 static Result<void> do_perform_apex_config(const BuiltinArguments& args) {
-    bool bootstrap = false;
-    if (args.size() == 2) {
-        if (args[1] != "--bootstrap") {
-            return Error() << "Unexpected argument: " << args[1];
-        }
-        bootstrap = true;
-    }
-
-    if (!bootstrap) {
+    // Do create apex data directories if /data/misc/apexdata exists
+    if (access("/data/misc/apexdata", 0) == 0) {
         create_apex_data_dirs();
     }
-
-    auto parse_result = ParseRcScriptsFromAllApexes(bootstrap);
-    if (!parse_result.ok()) {
-        return parse_result.error();
+    constexpr const char* kApexInfolist = "/apex/apex-info-list.xml";
+    if (selinux_android_restorecon(kApexInfolist, 0) == -1) {
+        PLOG(ERROR) << "restorecon failed: " << kApexInfolist;
     }
 
-    auto update_linker_config = do_update_linker_config(args);
-    if (!update_linker_config.ok()) {
-        return update_linker_config.error();
-    }
+    MountNamespace current_mnt_ns = GetCurrentMountNamespace().value_or(NS_BOOTSTRAP);
+    // We don't want to parse the same apexes twice in the same mount namespace.
+    static std::map<MountNamespace, bool> apex_parsed;
+    if (!std::exchange(apex_parsed[current_mnt_ns], true)) {
+        if (auto st = ParseRcScriptsFromAllApexes(current_mnt_ns == NS_DEFAULT); !st.ok()) {
+            LOG(ERROR) << st.error();
+        }
+        if (auto st = GenerateLinkerConfiguration(); !st.ok()) {
+            LOG(ERROR) << st.error();
+        }
 
-    if (!bootstrap) {
-        ServiceList::GetInstance().StartDelayedServices();
+        // Once the linker configuration is generated for the default mount namespace, processes can
+        // be started. Note that if there's only a single mount namespace, the bootstrap mount
+        // namespace is equal to the default mount namespace.
+        if (current_mnt_ns == NS_DEFAULT || !NeedsTwoMountNamespaces()) {
+            SetDefaultMountNamespaceReady();
+            // Now, we can start delayed services as well.
+            ServiceList::GetInstance().StartDelayedServices();
+        }
     }
     return {};
 }
@@ -1322,7 +1315,6 @@ const BuiltinFunctionMap& GetBuiltinFunctionMap() {
         {"perform_apex_config",     {0,     1,    {false,  do_perform_apex_config}}},
         {"umount",                  {1,     1,    {false,  do_umount}}},
         {"umount_all",              {0,     1,    {false,  do_umount_all}}},
-        {"update_linker_config",    {0,     0,    {false,  do_update_linker_config}}},
         {"readahead",               {1,     2,    {true,   do_readahead}}},
         {"restart",                 {1,     2,    {false,  do_restart}}},
         {"restorecon",              {1,     kMax, {true,   do_restorecon}}},

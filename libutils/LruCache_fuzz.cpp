@@ -58,6 +58,10 @@ static const std::vector<std::function<void(FuzzedDataProvider*, FuzzCache*)>> o
             size_t key = dataProvider->ConsumeIntegral<size_t>();
             cache->remove(key);
         },
+        [](FuzzedDataProvider* dataProvider, FuzzCache* cache) -> void {
+            size_t key = dataProvider->ConsumeIntegral<size_t>();
+            cache->contains(key);
+        },
         [](FuzzedDataProvider*, FuzzCache* cache) -> void {
             cache->setOnEntryRemovedListener(&callback);
         }};

@@ -46,6 +46,8 @@ class MergeWorker : public Worker {
     size_t ra_block_index_ = 0;
     uint64_t blocks_merged_in_group_ = 0;
     bool merge_async_ = false;
+    // TODO(b/431893207): This should be a tunable parameter
+    //
     // Queue depth of 8 seems optimal. We don't want
     // to have a huge depth as it may put more memory pressure
     // on the kernel worker threads given that we use

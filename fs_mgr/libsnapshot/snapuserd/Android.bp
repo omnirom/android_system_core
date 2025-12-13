@@ -61,6 +61,7 @@ cc_library_static {
     ],
     local_include_dirs: ["include/"],
     srcs: [
+        ":libsnapshot_capabilities_sources",
         "dm_user_block_server.cpp",
         "snapuserd_buffer.cpp",
         "user-space-merge/handler_manager.cpp",
@@ -83,13 +84,31 @@ cc_library_static {
         "libdm",
         "libext2_uuid",
         "libext4_utils",
+        "libfs_mgr_file_wait",
         "libsnapshot_cow",
+        "libsnapshot_flags_cc_lib",
         "liburing",
         "libprocessgroup",
         "libprocessgroup_util",
         "libjsoncpp",
         "liburing_cpp",
     ],
+    // We cannot support libublksrv on the host
+    target: {
+        android: {
+            static_libs: [
+                "libublksrv",
+            ],
+            srcs: [
+                "ublk_block_server.cpp",
+            ],
+        },
+        host: {
+            exclude_srcs: [
+                "ublk_block_server.cpp",
+            ],
+        },
+    },
     export_include_dirs: ["include"],
     header_libs: [
         "libcutils_headers",
@@ -119,7 +138,6 @@ cc_defaults {
 
     static_libs: [
         "libbase",
-        "libbrotli",
         "libcutils_sockets",
         "libdm",
         "libext2_uuid",
@@ -135,6 +153,7 @@ cc_defaults {
         "libz",
         "liblz4",
         "libext4_utils",
+        "libublksrv",
         "liburing",
         "libzstd",
         "liburing_cpp",
@@ -209,7 +228,6 @@ cc_defaults {
         "liblog",
     ],
     static_libs: [
-        "libbrotli",
         "libcutils_sockets",
         "libdm",
         "libext2_uuid",
@@ -226,6 +244,14 @@ cc_defaults {
         "libz",
         "liburing_cpp",
     ],
+    // no host side support for libublksrvqq
+    target: {
+        android: {
+            static_libs: [
+                "libublksrv",
+            ],
+        },
+    },
     include_dirs: [
         ".",
     ],
@@ -283,6 +309,12 @@ cc_test {
     test_options: {
         // VABC mandatory in Android T per VSR.
         min_shipping_api_level: 32,
+        test_runner_options: [
+            {
+                name: "native-test-timeout",
+                value: "5m",
+            },
+        ],
     },
 }
 
@@ -309,7 +341,6 @@ cc_binary_host {
         "liblog",
     ],
     static_libs: [
-        "libbrotli",
         "libcutils_sockets",
         "libdm",
         "libext2_uuid",

@@ -29,16 +29,17 @@ namespace init {
 
 // Builtins and service definitions both have their arguments start at 1 and finish at 3.
 Result<std::pair<int, rlimit>> ParseRlimit(const std::vector<std::string>& args) {
-    static const std::vector<std::pair<const char*, int>> text_to_resources = {
-            {"cpu", RLIMIT_CPU},           {"fsize", RLIMIT_FSIZE},
-            {"data", RLIMIT_DATA},         {"stack", RLIMIT_STACK},
-            {"core", RLIMIT_CORE},         {"rss", RLIMIT_RSS},
-            {"nproc", RLIMIT_NPROC},       {"nofile", RLIMIT_NOFILE},
-            {"memlock", RLIMIT_MEMLOCK},   {"as", RLIMIT_AS},
-            {"locks", RLIMIT_LOCKS},       {"sigpending", RLIMIT_SIGPENDING},
-            {"msgqueue", RLIMIT_MSGQUEUE}, {"nice", RLIMIT_NICE},
-            {"rtprio", RLIMIT_RTPRIO},     {"rttime", RLIMIT_RTTIME},
-    };
+    [[clang::no_destroy]] static const std::vector<std::pair<const char*, int>> text_to_resources =
+            {
+                    {"cpu", RLIMIT_CPU},           {"fsize", RLIMIT_FSIZE},
+                    {"data", RLIMIT_DATA},         {"stack", RLIMIT_STACK},
+                    {"core", RLIMIT_CORE},         {"rss", RLIMIT_RSS},
+                    {"nproc", RLIMIT_NPROC},       {"nofile", RLIMIT_NOFILE},
+                    {"memlock", RLIMIT_MEMLOCK},   {"as", RLIMIT_AS},
+                    {"locks", RLIMIT_LOCKS},       {"sigpending", RLIMIT_SIGPENDING},
+                    {"msgqueue", RLIMIT_MSGQUEUE}, {"nice", RLIMIT_NICE},
+                    {"rtprio", RLIMIT_RTPRIO},     {"rttime", RLIMIT_RTTIME},
+            };
 
     int resource;
 

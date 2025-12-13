@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include <linux/prctl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>

@@ -113,9 +113,7 @@ impl Drop for TraceEventFile {
         if let Err(ret) = self.restore() {
             error!(
                 "Failed to restore state of file {:?} with value: {:?}. Error: {}",
-                self.path,
-                self.restore_value,
-                ret.to_string()
+                self.path, self.restore_value, ret
             );
         }
     }
@@ -123,7 +121,6 @@ impl Drop for TraceEventFile {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct TracerConfigs {
-    pub excluded_paths: Vec<String>,
     pub buffer_size_file_path: String,
     pub trace_base_path: PathBuf,
     pub trace_events: Vec<String>,
@@ -133,6 +130,8 @@ pub(crate) struct TracerConfigs {
     // the end of run.
     #[allow(dead_code)]
     trace_files: Vec<TraceEventFile>,
+    pub exclude_mount_prefix: Vec<String>,
+    pub include_mount_prefix: Vec<String>,
 }
 
 impl TracerConfigs {
@@ -142,6 +141,8 @@ impl TracerConfigs {
         tracer_type: TracerType,
         trace_mount_point: Option<String>,
         tracing_instance: Option<String>,
+        exclude_mount_prefix: Vec<String>,
+        include_mount_prefix: Vec<String>,
     ) -> Result<Self, Error> {
         static TRACE_MOUNT_POINT: &str = "/sys/kernel/tracing";
 
@@ -172,13 +173,14 @@ impl TracerConfigs {
         }
 
         let mut configs = TracerConfigs {
-            excluded_paths: vec![],
             buffer_size_file_path: TRACE_BUFFER_SIZE_FILE.to_owned(),
             trace_base_path,
             trace_events: vec![],
             mountinfo_path: None,
             trace_operations: HashSet::new(),
             trace_files: vec![],
+            exclude_mount_prefix,
+            include_mount_prefix,
         };
 
         match tracer_type {
@@ -231,7 +233,7 @@ pub(crate) trait TraceSubsystem {
 /// Returns page size in bytes
 pub(crate) fn page_size() -> Result<usize, Error> {
     Ok(nix::unistd::sysconf(nix::unistd::SysconfVar::PAGE_SIZE)
-        .map_err(|e| Error::Custom { error: format!("failed to query page size: {}", e) })?
+        .map_err(|e| Error::Custom { error: format!("failed to query page size: {e}") })?
         .ok_or(Error::Custom { error: "failed to query page size: None returned".to_string() })?
         as usize)
 }
@@ -260,6 +262,8 @@ impl Tracer {
         tracer_type: TracerType,
         tracing_instance: Option<String>,
         setup_tracing: bool,
+        exclude_mount_prefix: Vec<String>,
+        include_mount_prefix: Vec<String>,
     ) -> Result<(Self, Sender<()>), Error> {
         /// Trace pipe path relative to trace mount point
         static TRACE_PIPE_PATH: &str = "trace_pipe";
@@ -273,6 +277,8 @@ impl Tracer {
             tracer_type.clone(),
             None,
             tracing_instance,
+            exclude_mount_prefix,
+            include_mount_prefix,
         )?;
 
         let pipe_path = Path::new(&configs.trace_base_path).join(TRACE_PIPE_PATH);
@@ -340,7 +346,7 @@ impl Tracer {
         let mut buf = String::new();
         self.trace_file
             .read_to_string(&mut buf)
-            .map_err(|e| Error::Read { error: format!("failed to read trace file: {}", e) })?;
+            .map_err(|e| Error::Read { error: format!("failed to read trace file: {e}") })?;
 
         for line in buf.lines() {
             let trimmed = line.trim_end();
@@ -492,6 +498,8 @@ pub(crate) mod tests {
             TracerType::Mem,
             Some(mount_point.to_str().unwrap().to_owned()),
             None,
+            vec![],
+            vec![],
         )
         .unwrap();
     }
@@ -506,6 +514,8 @@ pub(crate) mod tests {
                 TracerType::Mem,
                 Some(mount_point.to_str().unwrap().to_owned()),
                 None,
+                vec![],
+                vec![],
             )
             .unwrap_err()
             .to_string(),
@@ -526,6 +536,8 @@ pub(crate) mod tests {
                 TracerType::Mem,
                 Some(mount_point.to_str().unwrap().to_owned()),
                 Some("my_instance".to_owned()),
+                vec![],
+                vec![],
             )
             .unwrap_err()
             .to_string(),
@@ -544,7 +556,9 @@ pub(crate) mod tests {
             true,
             TracerType::Mem,
             Some(mount_point.to_str().unwrap().to_owned()),
-            None
+            None,
+            vec![],
+            vec![],
         )
         .is_ok());
     }
@@ -557,7 +571,9 @@ pub(crate) mod tests {
             true,
             TracerType::Mem,
             Some(mount_point.to_str().unwrap().to_owned()),
-            Some("my_instance".to_owned())
+            Some("my_instance".to_owned()),
+            vec![],
+            vec![],
         )
         .is_ok())
     }
@@ -662,8 +678,12 @@ pub(crate) mod tests {
         base: &Path,
         files: &mut [(NamedTempFile, Vec<Range<u64>>)],
         rf: &RecordsFile,
-    ) -> (RecordsFile, Vec<(PathBuf, Vec<Range<u64>>)>) {
+    ) -> (RecordsFile, Vec<(PathBuf, Vec<Range<u64>>)>, Vec<File>) {
         let mut new_files = vec![];
+        // Some security solution reads every file after it was closed, and
+        // keeping uncaches files open as a workaround to prevent that behavior
+        // from interfering with the test.
+        let mut out_files = vec![];
         for (in_file, ranges) in files {
             let out_path = base.join(in_file.path().file_name().unwrap());
             let mut out_file = OpenOptions::new()
@@ -687,6 +707,7 @@ pub(crate) mod tests {
             out_file.write_all(&*buf).unwrap();
 
             new_files.push((out_path, ranges.clone()));
+            out_files.push(out_file);
         }
 
         for inode in rf.inner.inode_map.values() {
@@ -702,7 +723,7 @@ pub(crate) mod tests {
             }
         }
         let modified_rf = modify_records_file(rf, base.to_str().unwrap());
-        (modified_rf, new_files)
+        (modified_rf, new_files, out_files)
     }
 
     // Generates mem trace string from given args. Sometimes injects lines that are of no importance
@@ -866,6 +887,8 @@ pub(crate) mod tests {
             t.clone(),
             Some(trace_mount_point.to_str().unwrap().to_string()),
             None,
+            vec![],
+            vec![],
         )
         .unwrap();
         let mut tempfiles = vec![buffer_size_file];

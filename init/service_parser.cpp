@@ -543,7 +543,7 @@ Result<void> ServiceParser::ParseUser(std::vector<std::string>&& args) {
 // We can't get these paths from TaskProfiles because profile definitions are changing
 // when we migrate to cgroups v2 while these hardcoded paths stay the same.
 static std::optional<const std::string> ConvertTaskFileToProfile(const std::string& file) {
-    static const std::map<const std::string, const std::string> map = {
+    [[clang::no_destroy]] static const std::map<const std::string, const std::string> map = {
             {"/dev/stune/top-app/tasks", "MaxPerformance"},
             {"/dev/stune/foreground/tasks", "HighPerformance"},
             {"/dev/cpuset/camera-daemon/tasks", "CameraServiceCapacity"},
@@ -582,7 +582,7 @@ Result<void> ServiceParser::ParseUpdatable(std::vector<std::string>&& args) {
 const KeywordMap<ServiceParser::OptionParser>& ServiceParser::GetParserMap() const {
     constexpr std::size_t kMax = std::numeric_limits<std::size_t>::max();
     // clang-format off
-    static const KeywordMap<ServiceParser::OptionParser> parser_map = {
+    [[clang::no_destroy]] static const KeywordMap<ServiceParser::OptionParser> parser_map = {
         {"capabilities",            {0,     kMax, &ServiceParser::ParseCapabilities}},
         {"class",                   {1,     kMax, &ServiceParser::ParseClass}},
         {"console",                 {0,     1,    &ServiceParser::ParseConsole}},

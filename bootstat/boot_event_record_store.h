@@ -21,6 +21,7 @@
 #include <gtest/gtest_prod.h>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -40,6 +41,10 @@ class BootEventRecordStore {
   // Persists the boot |event| with the associated |value| in the record store.
   void AddBootEventWithValue(const std::string& event, int32_t value);
 
+  // Persists the boot complete events with |prefix| with the associated |value|
+  // in the record store.
+  void AddBootCompleteEvents(const std::string& prefix, int32_t value);
+
   // Queries the named boot |event|. |record| must be non-null. |record|
   // contains the boot event data on success. Returns true iff the query is
   // successful.
@@ -47,6 +52,11 @@ class BootEventRecordStore {
 
   // Returns a list of all of the boot events persisted in the record store.
   std::vector<BootEventRecord> GetAllBootEvents() const;
+
+  inline static constexpr std::string_view kBootCompletePrefix = "boot_complete";
+  inline static constexpr std::string_view kFactoryResetBootCompletePrefix =
+      "factory_reset_boot_complete";
+  inline static constexpr std::string_view kOtaBootCompletePrefix = "ota_boot_complete";
 
  private:
   // The tests call SetStorePath to override the default store location with a
@@ -56,6 +66,9 @@ class BootEventRecordStore {
   FRIEND_TEST(BootEventRecordStoreTest, AddBootEventWithValue);
   FRIEND_TEST(BootEventRecordStoreTest, GetBootEvent);
   FRIEND_TEST(BootEventRecordStoreTest, GetBootEventNoFileContent);
+
+  // Removes the boot complete events from the previous boot.
+  void RemovePreviousBootCompleteEvents();
 
   // Sets the filesystem path of the record store.
   void SetStorePath(const std::string& path);

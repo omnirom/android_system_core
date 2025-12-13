@@ -20,6 +20,7 @@
 bool connect_tombstone_server(pid_t pid, android::base::unique_fd* tombstoned_socket,
                               android::base::unique_fd* text_output_fd,
                               android::base::unique_fd* proto_output_fd,
-                              DebuggerdDumpType dump_type);
+                              DebuggerdDumpType dump_type, bool is_microdroid_crash);
 
-bool notify_completion(int tombstoned_socket, int vsock_out, int vsock_proto);
+bool notify_completion(int tombstoned_socket, int vsock_out, int vsock_proto,
+                       bool is_microdroid_crash);

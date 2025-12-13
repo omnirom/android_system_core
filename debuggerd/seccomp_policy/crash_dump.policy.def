@@ -23,10 +23,12 @@ close: 1
 lseek: 1
 getdents64: 1
 faccessat: 1
+readlinkat: 1
 recvmsg: 1
 recvfrom: 1
 setsockopt: 1
 sysinfo: 1
+uname: 1
 
 process_vm_readv: 1
 
@@ -46,9 +48,9 @@ rt_tgsigqueueinfo: 1
 
 #if defined(__aarch64__)
 // PR_PAC_RESET_KEYS happens on aarch64 in pthread_create path.
-prctl: arg0 == PR_GET_NO_NEW_PRIVS || arg0 == PR_SET_VMA || arg0 == PR_PAC_RESET_KEYS || arg0 == PR_GET_TAGGED_ADDR_CTRL || arg0 == PR_PAC_GET_ENABLED_KEYS
+#define PRCTL_RESTRICTIONS arg0 == PR_GET_NO_NEW_PRIVS || arg0 == PR_SET_VMA || arg0 == PR_PAC_RESET_KEYS || arg0 == PR_GET_TAGGED_ADDR_CTRL || arg0 == PR_PAC_GET_ENABLED_KEYS
 #else
-prctl: arg0 == PR_GET_NO_NEW_PRIVS || arg0 == PR_SET_VMA
+#define PRCTL_RESTRICTIONS arg0 == PR_GET_NO_NEW_PRIVS || arg0 == PR_SET_VMA
 #endif
 
 #if 0
@@ -60,26 +62,33 @@ Define values for PROT_READ, PROT_WRITE and PROT_MTE ourselves to maintain backw
 #define PROT_MTE 0x20
 #endif
 
-madvise: 1
 #if defined(__aarch64__)
-mprotect: arg2 in PROT_READ|PROT_WRITE|PROT_MTE
+#define MAP_FLAGS PROT_READ|PROT_WRITE|PROT_MTE
 #else
-mprotect: arg2 in PROT_READ|PROT_WRITE
+#define MAP_FLAGS PROT_READ|PROT_WRITE
 #endif
+
+#if defined(__LP64__)
+#define MMAP mmap
+#else
+#define MMAP mmap2
+#endif
+
+#if !defined(NO_MMAP_MPROTECT_PRCTL_RULES)
+MMAP: arg2 in MAP_FLAGS
+mprotect: arg2 in MAP_FLAGS
+prctl: PRCTL_RESTRICTIONS
+#endif // !defined(NO_MMAP_MPROTECT_PRCTL_RULES)
+
+madvise: 1
 munmap: 1
 
 #if defined(__LP64__)
 getuid: 1
 fstat: 1
-#if defined(__aarch64__)
-mmap: arg2 in PROT_READ|PROT_WRITE|PROT_MTE
-#else
-mmap: arg2 in PROT_READ|PROT_WRITE
-#endif
 #else
 getuid32: 1
 fstat64: 1
-mmap2: arg2 in PROT_READ|PROT_WRITE
 #endif
 
 // Needed for logging.

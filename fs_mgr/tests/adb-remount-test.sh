@@ -1115,7 +1115,7 @@ if is_overlayfs_mounted 2>/dev/null; then
     LOG OK "overlay module supports override_creds"
   else
     case "$(adb_sh uname -r </dev/null)" in
-      4.[456789].* | 4.[1-9][0-9]* | [56789].*)
+      4.[456789].* | 4.[1-9][0-9]* | 5.* | 6.[1-9].* | 6.1[01].*)
         die "overlay module does not support override_creds"
         ;;
       *)

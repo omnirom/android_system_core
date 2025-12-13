@@ -23,8 +23,12 @@ namespace expresslog {
 /** Counter encapsulates StatsD write API calls */
 class Counter final {
 public:
+    [[deprecated(
+            "The libexpresslog is deprecated, transition to stats-log-api-gen is recommended")]]
     static void logIncrement(const char* metricId, int64_t amount = 1);
 
+    [[deprecated(
+            "The libexpresslog is deprecated, transition to stats-log-api-gen is recommended")]]
     static void logIncrementWithUid(const char* metricId, int32_t uid, int64_t amount = 1);
 };
 

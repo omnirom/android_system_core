@@ -23,9 +23,12 @@
 #include <utility>
 
 #include <android-base/file.h>
+#include <android-base/properties.h>
 #include <android-base/stringprintf.h>
 #include <android-base/strings.h>
 #include "protocol.h"
+
+constexpr const char kUnknown[] = "<unknown>";
 
 std::vector<std::string> get_command_line(pid_t pid) {
   std::vector<std::string> result;
@@ -41,23 +44,31 @@ std::vector<std::string> get_command_line(pid_t pid) {
     it = std::find_if(terminator, cmdline.cend(), [](char c) { return c != '\0'; });
   }
   if (result.empty()) {
-    result.emplace_back("<unknown>");
+    return {kUnknown};
   }
 
   return result;
 }
 
 std::string get_process_name(pid_t pid) {
-  std::string result = "<unknown>";
+  std::string result(kUnknown);
   android::base::ReadFileToString(android::base::StringPrintf("/proc/%d/cmdline", pid), &result);
   // We only want the name, not the whole command line, so truncate at the first NUL.
   return result.c_str();
 }
 
 std::string get_thread_name(pid_t tid) {
-  std::string result = "<unknown>";
+  std::string result(kUnknown);
   android::base::ReadFileToString(android::base::StringPrintf("/proc/%d/comm", tid), &result);
   return android::base::Trim(result);
+}
+
+std::string get_executable_name(pid_t pid) {
+  std::string result;
+  if (!android::base::Readlink(android::base::StringPrintf("/proc/%d/exe", pid), &result)) {
+    return kUnknown;
+  }
+  return result;
 }
 
 std::string get_timestamp() {
@@ -93,4 +104,8 @@ bool iterate_tids(pid_t pid, std::function<void(pid_t)> callback) {
     callback(tid);
   }
   return true;
+}
+
+bool is_microdroid() {
+  return android::base::GetProperty("ro.hardware", "") == "microdroid";
 }

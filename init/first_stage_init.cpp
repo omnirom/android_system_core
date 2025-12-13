@@ -36,6 +36,7 @@
 #include <android-base/chrono_utils.h>
 #include <android-base/file.h>
 #include <android-base/logging.h>
+#include <android-base/stringify.h>
 #include <android-base/stringprintf.h>
 #include <android/avf_cc_flags.h>
 #include <fs_mgr.h>
@@ -284,9 +285,8 @@ bool LoadKernelModules(BootMode boot_mode, bool want_console, bool want_parallel
     modules_loaded = m.GetModuleCount();
     if (modules_loaded > 0) {
         LOG(INFO) << "Loaded " << modules_loaded << " modules from " << MODULE_BASE_DIR;
-        return retval;
     }
-    return true;
+    return retval;
 }
 
 static bool IsChargerMode(const std::string& cmdline, const std::string& bootconfig) {
@@ -356,8 +356,6 @@ int FirstStageMain(int argc, char** argv) {
 #define MAKE_STR(x) __STRING(x)
     CHECKCALL(mount("proc", "/proc", "proc", 0, "hidepid=2,gid=" MAKE_STR(AID_READPROC)));
 #undef MAKE_STR
-    // Don't expose the raw commandline to unprivileged processes.
-    CHECKCALL(chmod("/proc/cmdline", 0440));
     std::string cmdline;
     android::base::ReadFileToString("/proc/cmdline", &cmdline);
     // Don't expose the raw bootconfig to unprivileged processes.
@@ -562,6 +560,18 @@ int FirstStageMain(int argc, char** argv) {
     dup2(fd, STDOUT_FILENO);
     dup2(fd, STDERR_FILENO);
     close(fd);
+#ifdef HWASAN_OPTIONS
+    // (second stage) init is the first process to use HWASan. It gets run too
+    // early for the HWASAN_OPTIONS in init.environ.rc.gen to apply, so we
+    // have to do it here manually.
+    //
+    // This is especially important for disable_coredump, which defaults to 1.
+    // If the user sets it to `0` in HWASAN_OPTIONS, and we didn't also apply
+    // it to (second stage) init, the setting would not take effect. This is
+    // because `0` is in fact a noop, while `1` applies changes. These changes
+    // are inherited beyond exec.
+    setenv("HWASAN_OPTIONS", STRINGIFY(HWASAN_OPTIONS), true);
+#endif
     execv(path, const_cast<char**>(args));
 
     // execv() only returns if an error happened, in which case we

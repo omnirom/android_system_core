@@ -26,6 +26,7 @@
 
 #include <android-base/unique_fd.h>
 
+#include <atomic>
 #include <unordered_map>
 #include <utility>
 
@@ -439,18 +440,20 @@ public:
      */
     static sp<Looper> getForThread();
 
-private:
-  using SequenceNumber = uint64_t;
+    static void setSkipEpollWaitForZeroTimeout();
 
-  struct Request {
-      int fd;
-      int ident;
-      int events;
-      sp<LooperCallback> callback;
-      void* data;
+  private:
+    using SequenceNumber = uint64_t;
 
-      uint32_t getEpollEvents() const;
-  };
+    struct Request {
+        int fd;
+        int ident;
+        int events;
+        sp<LooperCallback> callback;
+        void* data;
+
+        uint32_t getEpollEvents() const;
+    };
 
     struct Response {
         SequenceNumber seq;
@@ -479,7 +482,7 @@ private:
 
     // Whether we are currently waiting for work.  Not protected by a lock,
     // any use of it is racy anyway.
-    volatile bool mPolling;
+    std::atomic<bool> mPolling;
 
     android::base::unique_fd mEpollFd;  // guarded by mLock but only modified on the looper thread
     bool mEpollRebuildRequired; // guarded by mLock
@@ -506,6 +509,10 @@ private:
     void scheduleEpollRebuildLocked();
 
     static void initEpollEvent(struct epoll_event* eventItem);
+
+    // Whether epoll_wait should be skipped for a poll if the input timeout is
+    // zero (i.e. if the MQ already has pending messages to process).
+    inline static bool sSkipEpollWaitIfPossible = false;
 };
 
 } // namespace android

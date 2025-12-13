@@ -122,5 +122,8 @@ std::vector<std::string> FilterVersionedConfigs(const std::vector<std::string>& 
 // Child's stderr is captured and logged using LOG(ERROR).
 bool ForkExecveAndWaitForCompletion(const char* filename, char* const argv[]);
 
+// Convert SIGTERM into "SIGTERM". For invalid signal numbers, return "invalid signal (n)"
+std::string SignalName(int signum);
+
 }  // namespace init
 }  // namespace android

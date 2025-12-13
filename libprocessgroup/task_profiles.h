@@ -85,6 +85,7 @@ class ProfileAction {
     virtual void DropResourceCaching(ResourceCacheType) {}
     virtual bool IsValidForProcess(uid_t, pid_t) const { return false; }
     virtual bool IsValidForTask(pid_t) const { return false; }
+    virtual bool IsValidForUID(uid_t) const { return false; }
 
   protected:
     enum CacheUseResult { SUCCESS, FAIL, UNUSED };
@@ -192,6 +193,31 @@ class SetSchedulerPolicyAction : public ProfileAction {
   private:
     int policy_;
     std::optional<int> priority_or_nice_;
+};
+
+class CompactMemcgAction : public ProfileAction {
+  public:
+    enum Type { FULL, ANON, FILE };
+
+    CompactMemcgAction(Type type, const std::string& cgroup_v2_root_path)
+        : type_(type), cgroup_v2_root_path_(cgroup_v2_root_path) {}
+
+    const char* Name() const override { return "Compact"; }
+    bool ExecuteForProcess(uid_t uid, pid_t pid) const override;
+    bool ExecuteForUID(uid_t uid) const override;
+    bool IsValidForProcess(uid_t uid, pid_t pid) const override;
+    bool IsValidForUID(uid_t uid) const override;
+
+  private:
+    static constexpr const char* MEMORY_CURRENT_FILE = "/memory.current";
+    static constexpr const char* MEMORY_RECLAIM_FILE = "/memory.reclaim";
+    Type type_;
+    std::string cgroup_v2_root_path_;
+
+    bool GenerateReclaimString(const std::string& memory_current_path, std::string& out) const;
+    bool Execute(const std::string& memory_current_path,
+                 const std::string& memory_reclaim_path) const;
+    bool IsValid(const std::string& memory_reclaim_path) const;
 };
 
 class TaskProfile {

@@ -49,11 +49,16 @@ TEST_F(LibstatssocketLazyTest, NoLibstatssocketForStatsEvent) {
     EXPECT_DEATH(AStatsEvent_writeBool(event, false), kLoadFailed);
     EXPECT_DEATH(AStatsEvent_writeByteArray(event, NULL, 0), kLoadFailed);
     EXPECT_DEATH(AStatsEvent_writeString(event, NULL), kLoadFailed);
-    EXPECT_DEATH(AStatsEvent_writeStringArray(event, NULL, 0), kLoadFailed);
     EXPECT_DEATH(AStatsEvent_writeAttributionChain(event, NULL, NULL, 0), kLoadFailed);
 
     EXPECT_DEATH(AStatsEvent_addBoolAnnotation(event, 0, false), kLoadFailed);
     EXPECT_DEATH(AStatsEvent_addInt32Annotation(event, 0, 0), kLoadFailed);
+
+    EXPECT_DEATH(AStatsEvent_writeInt32Array(event, NULL, 0), kLoadFailed);
+    EXPECT_DEATH(AStatsEvent_writeInt64Array(event, NULL, 0), kLoadFailed);
+    EXPECT_DEATH(AStatsEvent_writeFloatArray(event, NULL, 0), kLoadFailed);
+    EXPECT_DEATH(AStatsEvent_writeBoolArray(event, NULL, 0), kLoadFailed);
+    EXPECT_DEATH(AStatsEvent_writeStringArray(event, NULL, 0), kLoadFailed);
 }
 
 TEST_F(LibstatssocketLazyTest, NoLibstatssocketForStatsSocket) {

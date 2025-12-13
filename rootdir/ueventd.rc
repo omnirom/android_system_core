@@ -58,6 +58,9 @@ subsystem vfio
 # kms driver for drm based gpu
 /dev/dri/*                0666   root       graphics
 
+# udmabuf driver
+/dev/udmabuf              0666   root       root
+
 # these should not be world writable
 /dev/uhid                 0660   uhid       uhid
 /dev/uinput               0660   uhid       uhid
@@ -78,6 +81,10 @@ subsystem vfio
 
 /dev/kvm                  0666   root       root
 /dev/vhost-vsock          0666   root       root
+
+# apexd creates DM for downloaded APEX files, which should be readable by
+# system_server (PackageManager).
+/dev/block/dm-*           0640   root       system
 
 # sysfs properties
 /sys/devices/platform/trusty.*      trusty_version        0440  root   log

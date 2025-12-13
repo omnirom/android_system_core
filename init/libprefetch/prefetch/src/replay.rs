@@ -47,7 +47,7 @@ struct ScopedLog<T: Display + Sized> {
 
 fn scoped_log<T: Display + Sized>(ctx: usize, msg: T) -> ScopedLog<T> {
     let thd_id = ctx;
-    debug!("{} {} start", thd_id, msg);
+    debug!("{thd_id} {msg} start");
     ScopedLog { msg, thd_id }
 }
 
@@ -63,7 +63,7 @@ fn readahead(
     record: &Record,
     buffer: &mut [u8; READ_SZ],
 ) -> Result<(), Error> {
-    debug!("readahead {:?}", record);
+    debug!("readahead {record:?}");
     let _dbg = scoped_log(id, "readahead");
 
     let mut current_offset: off64_t = record
@@ -145,12 +145,12 @@ fn worker_internal(
                         } else {
                             match e {
                                 Error::SkipPrefetch { path } => {
-                                    debug!("Skipping file during replay: {}", path);
+                                    debug!("Skipping file during replay: {path}");
                                 }
                                 _ => error!(
                                     "Failed to open file id: {} with {}",
                                     record.file_id.clone(),
-                                    e.to_string()
+                                    e
                                 ),
                             }
                             continue;
@@ -170,7 +170,7 @@ fn worker_internal(
                         warn!(
                             "Failed to turn off filesystem read ahead for file id: {} with {}",
                             record.file_id.clone(),
-                            e.to_string()
+                            e
                         );
                     }
                     file
@@ -184,11 +184,7 @@ fn worker_internal(
             if exit_on_error {
                 return Err(e);
             } else {
-                error!(
-                    "readahead failed on file id: {} with: {}",
-                    record.file_id.clone(),
-                    e.to_string()
-                );
+                error!("readahead failed on file id: {} with: {}", record.file_id.clone(), e);
                 continue;
             }
         }
@@ -213,7 +209,7 @@ fn worker(
         buffer,
     );
     if result.is_err() {
-        error!("worker failed with {:?}", result);
+        error!("worker failed with {result:?}");
         let mut state = state.lock().unwrap();
         if state.result.is_ok() {
             state.result = result;
@@ -652,7 +648,7 @@ pub mod tests {
             generate_cached_files_and_record(None, create_symlink, Some(page_size));
 
         // Here "uncached_files" emulate the files after reboot when none of those files data is in cache.
-        let (mut uncached_rf, mut uncached_files) =
+        let (mut uncached_rf, mut uncached_files, _out_files) =
             copy_uncached_files_and_record_from(Path::new(&test_base_dir), &mut files, &rf);
 
         // Injects error(s) in the form of invalid filename

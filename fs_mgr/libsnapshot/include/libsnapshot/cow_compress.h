@@ -33,8 +33,6 @@ class ICompressor {
     // Factory methods for compression methods.
     static std::unique_ptr<ICompressor> Gz(const int32_t compression_level,
                                            const uint32_t block_size);
-    static std::unique_ptr<ICompressor> Brotli(const int32_t compression_level,
-                                               const uint32_t block_size);
     static std::unique_ptr<ICompressor> Lz4(const int32_t compression_level,
                                             const uint32_t block_size);
     static std::unique_ptr<ICompressor> Zstd(const int32_t compression_level,

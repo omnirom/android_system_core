@@ -58,23 +58,35 @@ pub use arch::android::*;
 /// Records prefetch data for the given configuration
 pub fn record(args: &RecordArgs) -> Result<(), Error> {
     #[cfg(target_os = "android")]
-    if !ensure_record_is_ready(&args.ready_path, &args.path, &args.build_fingerprint_path)? {
+    if !ensure_record_is_ready(
+        &args.get_ready_path(),
+        &args.get_pack_path(),
+        &args.build_fingerprint_path,
+    )? {
         info!("Cannot perform record -- skipping");
         return Ok(());
     }
 
     info!("Starting record.");
+
+    let exclude_mount_prefix: Vec<String> =
+        args.exclude_mount_prefix.iter().filter_map(|p| p.to_str().map(String::from)).collect();
+    let include_mount_prefix: Vec<String> =
+        args.include_mount_prefix.iter().filter_map(|p| p.to_str().map(String::from)).collect();
+
     let (mut tracer, exit_tx) = tracer::Tracer::create(
         args.trace_buffer_size_kib,
         args.tracing_subsystem.clone(),
         args.tracing_instance.clone(),
         args.setup_tracing,
+        exclude_mount_prefix,
+        include_mount_prefix,
     )?;
     let duration = Duration::from_secs(args.duration as u64);
 
     let thd = thread::spawn(move || {
         if !duration.is_zero() {
-            info!("Record start - waiting for duration: {:?}", duration);
+            info!("Record start - waiting for duration: {duration:?}");
             thread::sleep(duration);
         } else {
             #[cfg(target_os = "android")]
@@ -91,18 +103,22 @@ pub fn record(args: &RecordArgs) -> Result<(), Error> {
     thd.join()
         .map_err(|_| Error::ThreadPool { error: "Failed to join timeout thread".to_string() })?;
 
-    let mut out_file =
-        OpenOptions::new().write(true).create(true).truncate(true).open(&args.path).map_err(
-            |source| Error::Create { source, path: args.path.to_str().unwrap().to_owned() },
-        )?;
+    let path = args.get_pack_path();
 
-    std::fs::set_permissions(&args.path, std::fs::Permissions::from_mode(0o644))
-        .map_err(|source| Error::Create { source, path: args.path.to_str().unwrap().to_owned() })?;
+    let mut out_file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .map_err(|source| Error::Create { source, path: path.to_str().unwrap().to_owned() })?;
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+        .map_err(|source| Error::Create { source, path: path.to_str().unwrap().to_owned() })?;
 
     // Write the record file
     out_file
         .write_all(&rf.add_checksum_and_serialize()?)
-        .map_err(|source| Error::Write { path: args.path.to_str().unwrap().to_owned(), source })?;
+        .map_err(|source| Error::Write { path: path.to_str().unwrap().to_owned(), source })?;
     out_file.sync_all()?;
 
     // Write build-finger-print file

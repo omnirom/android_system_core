@@ -19,6 +19,5 @@
 #include <string>
 #include <vector>
 
-extern std::string kernel_cmdline;
 extern std::vector<std::string> test_modules;
 extern std::vector<std::string> modules_loaded;

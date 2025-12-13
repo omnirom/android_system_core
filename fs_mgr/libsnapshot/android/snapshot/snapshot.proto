@@ -181,6 +181,7 @@ enum MergeFailureCode {
     MemAlignConsistencyCheck = 18;
     DirectReadConsistencyCheck = 19;
     WrongMergeCountConsistencyCheck = 20;
+    IncorrectMergePhase = 21;
 };
 
 message SnapshotUpdateStatus {
@@ -236,6 +237,9 @@ message SnapshotUpdateStatus {
 
     // Skips verification of partitions
     bool skip_verification = 17;
+
+    // Use ublk
+    bool ublk_snapshots_enabled = 18;
 }
 
 message SnapshotMergeReport {

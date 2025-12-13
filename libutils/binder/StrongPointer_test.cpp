@@ -14,12 +14,25 @@
  * limitations under the License.
  */
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
-
-#include <utils/StrongPointer.h>
 #include <utils/RefBase.h>
+#include <utils/StrongPointer.h>
+
+#include <cstdlib>
 
 using namespace android;
+using ::testing::_;
+
+// Define this here as we do not want to depend on LightRefBase in libutils_binder
+// as it is not used in libbinder.
+namespace android {
+
+void LightRefBase_reportIncStrongRequireStrongFailed(const void*) {
+  std::abort();
+}
+
+}  // namespace android
 
 class SPFoo : virtual public RefBase {
   public:
@@ -35,6 +48,7 @@ class SPFoo : virtual public RefBase {
     bool* mDeleted;
 };
 
+#ifndef ANDROID_UTILS_CUSTOM_ALLOCATOR
 class SPLightFoo : virtual public VirtualLightRefBase {
   public:
     explicit SPLightFoo(bool* deleted_check) : mDeleted(deleted_check) { *mDeleted = false; }
@@ -44,11 +58,35 @@ class SPLightFoo : virtual public VirtualLightRefBase {
   private:
     bool* mDeleted;
 };
+#endif  // ANDROID_UTILS_CUSTOM_ALLOCATOR
+
+#ifdef ANDROID_UTILS_CUSTOM_ALLOCATOR
+// A simple allocator that always returns nullptr.
+class DoNothingAllocator : public Allocator {
+  public:
+    DoNothingAllocator() {
+        ON_CALL(*this, allocate(_, _)).WillByDefault([](size_t, size_t) { return nullptr; });
+        ON_CALL(*this, reallocate(_, _)).WillByDefault([](void*, size_t) { return nullptr; });
+        ON_CALL(*this, deallocate(_)).WillByDefault([](void* ptr) { ASSERT_EQ(ptr, nullptr); });
+        ON_CALL(*this, abort()).WillByDefault([]() { std::abort(); });
+    }
+
+    MOCK_METHOD(void*, allocate, (size_t size, size_t alignment), (override));
+    MOCK_METHOD(void*, reallocate, (void* ptr, size_t size), (override));
+    MOCK_METHOD(void, deallocate, (void* ptr), (override));
+    MOCK_METHOD(void, abort, (), (override));
+};
+#endif  // ANDROID_UTILS_CUSTOM_ALLOCATOR
 
 template <typename T>
 class StrongPointer : public ::testing::Test {};
 
+#ifdef ANDROID_UTILS_CUSTOM_ALLOCATOR
+using RefBaseTypes = ::testing::Types<SPFoo>;
+#else
 using RefBaseTypes = ::testing::Types<SPFoo, SPLightFoo>;
+#endif  // ANDROID_UTILS_CUSTOM_ALLOCATOR
+
 TYPED_TEST_CASE(StrongPointer, RefBaseTypes);
 
 TYPED_TEST(StrongPointer, move) {
@@ -120,3 +158,20 @@ TYPED_TEST(StrongPointer, release) {
     foo->decStrong(nullptr);
     ASSERT_TRUE(isDeleted) << "foo was leaked!";
 }
+
+#ifdef ANDROID_UTILS_CUSTOM_ALLOCATOR
+
+TYPED_TEST(StrongPointer, MakeNoThrow) {
+  DoNothingAllocator allocator;  // Use the mock allocator
+  android::AllocatorTracker::getInstance().setAllocator(&allocator);
+
+  bool isDeleted;
+  EXPECT_CALL(allocator, allocate(_, _)).WillOnce([](size_t, size_t) { return nullptr; });
+
+  sp<TypeParam> foo = sp<TypeParam>::makeNoThrow(&isDeleted);
+  EXPECT_EQ(foo.get(), nullptr);
+
+  android::AllocatorTracker::getInstance().setAllocator(nullptr);
+}
+
+#endif  // ANDROID_UTILS_CUSTOM_ALLOCATOR

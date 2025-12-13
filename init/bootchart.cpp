@@ -47,8 +47,8 @@ namespace init {
 
 static std::thread* g_bootcharting_thread;
 
-static std::mutex g_bootcharting_finished_mutex;
-static std::condition_variable g_bootcharting_finished_cv;
+[[clang::no_destroy]] static std::mutex g_bootcharting_finished_mutex;
+[[clang::no_destroy]] static std::condition_variable g_bootcharting_finished_cv;
 static bool g_bootcharting_finished;
 
 static long long get_uptime_jiffies() {

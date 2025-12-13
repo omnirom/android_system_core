@@ -67,8 +67,8 @@ TEST_F(DriverTest, TextMessage) {
     std::unique_ptr<MockTransport> transport_pointer = std::make_unique<MockTransport>();
     MockTransport* transport = transport_pointer.get();
 
-    DriverCallbacks callbacks{[](const std::string&) {}, [](int) {}, [](const std::string&) {},
-                              [&text](const std::string& extra_text) { text += extra_text; }};
+    DriverCallbacks callbacks;
+    callbacks.text = [&text](const std::string& extra_text) { text += extra_text; };
 
     FastBootDriver driver(std::move(transport_pointer), callbacks);
 

@@ -23,7 +23,6 @@
 #include <unistd.h>
 #include <memory>
 
-#include <KeyMintUtils.h>
 #include <android-base/logging.h>
 #include <android-base/properties.h>
 #include <android/binder_ibinder.h>
@@ -52,7 +51,6 @@ using AidlGatekeeperVerifyResp = aidl::android::hardware::gatekeeper::Gatekeeper
 using GKResponseCode = ::android::service::gatekeeper::ResponseCode;
 using ::aidl::android::hardware::security::keymint::HardwareAuthenticatorType;
 using ::aidl::android::hardware::security::keymint::HardwareAuthToken;
-using ::aidl::android::hardware::security::keymint::km_utils::authToken2AidlVec;
 using ::aidl::android::security::authorization::IKeystoreAuthorization;
 
 namespace android {
@@ -60,6 +58,58 @@ namespace android {
 static const String16 KEYGUARD_PERMISSION("android.permission.ACCESS_KEYGUARD_SECURE_STORAGE");
 static const String16 DUMP_PERMISSION("android.permission.DUMP");
 constexpr const char gatekeeperServiceName[] = "android.hardware.gatekeeper.IGatekeeper/default";
+
+namespace {
+
+template <typename T, typename OutIter>
+inline OutIter copy_bytes_to_iterator(const T& value, OutIter dest) {
+    const uint8_t* value_ptr = reinterpret_cast<const uint8_t*>(&value);
+    return std::copy(value_ptr, value_ptr + sizeof(value), dest);
+}
+
+/**
+ * Convert any unsigned integer from host to network order.  We implement this here rather than
+ * using the functions from arpa/inet.h because the TEE doesn't have inet.h.  This isn't the most
+ * efficient implementation, but the compiler should unroll the loop and tighten it up.
+ */
+template <typename T>
+T hton(T t) {
+    T retval;
+    uint8_t* byte_ptr = reinterpret_cast<uint8_t*>(&retval);
+    for (size_t i = sizeof(t); i > 0; --i) {
+        byte_ptr[i - 1] = t & 0xFF;
+        t >>= 8;
+    }
+    return retval;
+}
+
+std::vector<uint8_t> authToken2AidlVec(const std::optional<HardwareAuthToken>& token) {
+    static_assert(1 /* version size */ + sizeof(token->challenge) + sizeof(token->userId) +
+                                  sizeof(token->authenticatorId) +
+                                  sizeof(token->authenticatorType) + sizeof(token->timestamp) +
+                                  32 /* HMAC size */
+                          == sizeof(hw_auth_token_t),
+                  "HardwareAuthToken content size does not match hw_auth_token_t size");
+
+    std::vector<uint8_t> result;
+
+    if (!token.has_value()) return result;
+    if (token->mac.size() != 32) return result;
+
+    result.resize(sizeof(hw_auth_token_t));
+    auto pos = result.begin();
+    *pos++ = 0;  // Version byte
+    pos = copy_bytes_to_iterator(token->challenge, pos);
+    pos = copy_bytes_to_iterator(token->userId, pos);
+    pos = copy_bytes_to_iterator(token->authenticatorId, pos);
+    pos = copy_bytes_to_iterator(hton(static_cast<uint32_t>(token->authenticatorType)), pos);
+    pos = copy_bytes_to_iterator(hton(token->timestamp.milliSeconds), pos);
+    pos = std::copy(token->mac.data(), token->mac.data() + token->mac.size(), pos);
+
+    return result;
+}
+
+}  // namespace
 
 GateKeeperProxy::GateKeeperProxy() {
     clear_state_if_needed_done = false;

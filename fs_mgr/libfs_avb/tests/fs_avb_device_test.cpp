@@ -59,9 +59,7 @@ TEST(FsAvbUtilTest, GetHashtreeDescriptor_SystemOther) {
     if (fs_mgr_get_slot_suffix() == "") return;
 
     // Skip running this test if system_other is a logical partition.
-    // Note that system_other is still a physical partition on "retrofit" devices.
-    if (android::base::GetBoolProperty("ro.boot.dynamic_partitions", false) &&
-        !android::base::GetBoolProperty("ro.boot.dynamic_partitions_retrofit", false)) {
+    if (android::base::GetBoolProperty("ro.boot.dynamic_partitions", false)) {
         return;
     }
 
@@ -98,9 +96,7 @@ TEST(AvbHandleTest, LoadAndVerifyVbmeta_SystemOther) {
     if (fs_mgr_get_slot_suffix() == "") return;
 
     // Skip running this test if system_other is a logical partition.
-    // Note that system_other is still a physical partition on "retrofit" devices.
-    if (android::base::GetBoolProperty("ro.boot.dynamic_partitions", false) &&
-        !android::base::GetBoolProperty("ro.boot.dynamic_partitions_retrofit", false)) {
+    if (android::base::GetBoolProperty("ro.boot.dynamic_partitions", false)) {
         return;
     }
 

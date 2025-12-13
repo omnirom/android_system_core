@@ -46,7 +46,9 @@ TEST(SuperImageTool, Layout) {
     ASSERT_NE(metadata, nullptr);
 
     auto geometry_blob = std::make_shared<std::string>(SerializeGeometry(metadata->geometry));
-    auto metadata_blob = std::make_shared<std::string>(SerializeMetadata(*metadata.get()));
+    auto metadata_blob =
+            std::make_shared<std::string>(ValidateAndSerializeMetadata(*metadata.get()));
+    ASSERT_FALSE(metadata_blob->empty());
     metadata_blob->resize(4_KiB, '\0');
 
     auto extents = tool.GetImageLayout();
@@ -91,21 +93,6 @@ TEST(SuperImageTool, NoRetrofit) {
 
     // Add an extra block device.
     metadata->block_devices.emplace_back(metadata->block_devices[0]);
-
-    SuperLayoutBuilder tool;
-    ASSERT_FALSE(tool.Open(*metadata.get()));
-}
-
-TEST(SuperImageTool, NoRetrofit2) {
-    auto builder = MetadataBuilder::New(4_MiB, 8_KiB, 2);
-    ASSERT_NE(builder, nullptr);
-
-    Partition* p = builder->AddPartition(
-            "system_a", LP_PARTITION_ATTR_READONLY | LP_PARTITION_ATTR_SLOT_SUFFIXED);
-    ASSERT_NE(p, nullptr);
-
-    auto metadata = builder->Export();
-    ASSERT_NE(metadata, nullptr);
 
     SuperLayoutBuilder tool;
     ASSERT_FALSE(tool.Open(*metadata.get()));

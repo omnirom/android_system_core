@@ -24,13 +24,12 @@
 
 #include <android/log.h>
 #include <android-base/macros.h>
+#include <android-base/stringify.h>
 #include <cutils/properties.h>
 #include <gtest/gtest.h>
 
 namespace android {
 
-#define STRINGIFY_INNER(x) #x
-#define STRINGIFY(x) STRINGIFY_INNER(x)
 #define ASSERT_OK(x) ASSERT_EQ(0, (x))
 #define EXPECT_OK(x) EXPECT_EQ(0, (x))
 

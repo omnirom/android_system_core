@@ -31,11 +31,10 @@ namespace snapshot {
 static std::string CompressionToString(CowCompression& compression) {
     std::string output;
     switch (compression.algorithm) {
-        case kCowCompressBrotli:
-            output.append("brotli");
-            break;
         case kCowCompressGz:
             output.append("gz");
+            break;
+        case kCowCompressBrotliUnsupported:
             break;
         case kCowCompressLz4:
             output.append("lz4");
@@ -54,10 +53,9 @@ void OneShotCompressionTest() {
     std::cout << "\n-------One Shot Compressor Perf Analysis-------\n";
 
     std::vector<CowCompression> compression_list = {
-            {kCowCompressLz4, 0},     {kCowCompressBrotli, 1}, {kCowCompressBrotli, 3},
-            {kCowCompressBrotli, 11}, {kCowCompressZstd, 3},   {kCowCompressZstd, 6},
-            {kCowCompressZstd, 9},    {kCowCompressZstd, 22},  {kCowCompressGz, 1},
-            {kCowCompressGz, 3},      {kCowCompressGz, 6},     {kCowCompressGz, 9}};
+            {kCowCompressLz4, 0},  {kCowCompressZstd, 3},  {kCowCompressZstd, 6},
+            {kCowCompressZstd, 9}, {kCowCompressZstd, 22}, {kCowCompressGz, 1},
+            {kCowCompressGz, 3},   {kCowCompressGz, 6},    {kCowCompressGz, 9}};
     std::vector<std::unique_ptr<ICompressor>> compressors;
     for (auto i : compression_list) {
         compressors.emplace_back(ICompressor::Create(i, BLOCK_SZ));
@@ -118,10 +116,9 @@ void IncrementalCompressionTest() {
     std::cout << "\n-------Incremental Compressor Perf Analysis-------\n";
 
     std::vector<CowCompression> compression_list = {
-            {kCowCompressLz4, 0},     {kCowCompressBrotli, 1}, {kCowCompressBrotli, 3},
-            {kCowCompressBrotli, 11}, {kCowCompressZstd, 3},   {kCowCompressZstd, 6},
-            {kCowCompressZstd, 9},    {kCowCompressZstd, 22},  {kCowCompressGz, 1},
-            {kCowCompressGz, 3},      {kCowCompressGz, 6},     {kCowCompressGz, 9}};
+            {kCowCompressLz4, 0},  {kCowCompressZstd, 3},  {kCowCompressZstd, 6},
+            {kCowCompressZstd, 9}, {kCowCompressZstd, 22}, {kCowCompressGz, 1},
+            {kCowCompressGz, 3},   {kCowCompressGz, 6},    {kCowCompressGz, 9}};
     std::vector<std::unique_ptr<ICompressor>> compressors;
     for (auto i : compression_list) {
         compressors.emplace_back(ICompressor::Create(i, BLOCK_SZ));

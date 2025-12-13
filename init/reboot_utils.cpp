@@ -37,7 +37,7 @@
 namespace android {
 namespace init {
 
-static std::string init_fatal_reboot_target = "bootloader";
+[[clang::no_destroy]] static std::string init_fatal_reboot_target = "bootloader";
 static bool init_fatal_panic = false;
 
 // this needs to read the /proc/* files directly because it is called before

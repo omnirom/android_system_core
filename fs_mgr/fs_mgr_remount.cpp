@@ -150,8 +150,7 @@ static bool ReadFstab(const char* fstab_file, android::fs_mgr::Fstab* fstab) {
 }
 
 bool VerifyCheckpointing() {
-    if (!android::base::GetBoolProperty("ro.virtual_ab.enabled", false) &&
-        !android::base::GetBoolProperty("ro.virtual_ab.retrofit", false)) {
+    if (!android::base::GetBoolProperty("ro.virtual_ab.enabled", false)) {
         return true;
     }
 

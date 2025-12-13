@@ -22,11 +22,13 @@
 
 #include <algorithm>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
 
 #include <android-base/file.h>
+#include <android-base/thread_annotations.h>
 #include <selinux/label.h>
 
 #include "uevent.h"
@@ -48,6 +50,12 @@ class Permissions {
     gid_t gid() const { return gid_; }
 
   protected:
+    enum class PathMatchType {
+        kExact,
+        kPrefix,
+        kWildcard,
+    };
+
     const std::string& name() const { return name_; }
 
   private:
@@ -55,8 +63,7 @@ class Permissions {
     mode_t perm_;
     uid_t uid_;
     gid_t gid_;
-    bool prefix_;
-    bool wildcard_;
+    PathMatchType match_type_;
     bool no_fnm_pathname_;
 };
 
@@ -135,7 +142,7 @@ class DeviceHandler : public UeventHandler {
     virtual ~DeviceHandler() = default;
 
     bool CheckUeventForBootPartUuid(const Uevent& uevent);
-    void HandleUevent(const Uevent& uevent) override;
+    void HandleUevent(const Uevent& uevent) override EXCLUDES(device_update_lock_);
 
     // `androidboot.partition_map` allows associating a partition name for a raw block device
     // through a comma separated and semicolon deliminated list. For example,
@@ -144,6 +151,7 @@ class DeviceHandler : public UeventHandler {
     static std::string GetPartitionNameForDevice(const std::string& device);
     bool IsBootDeviceStrict() const;
     bool IsBootDevice(const Uevent& uevent) const;
+    void EnqueueUevent(const Uevent& uevent, ThreadPool& thread_pool) override;
 
   private:
     struct TrackedUevent {
@@ -169,21 +177,25 @@ class DeviceHandler : public UeventHandler {
     void FixupSysPermissions(const std::string& upath, const std::string& subsystem) const;
     void HandleAshmemUevent(const Uevent& uevent);
 
-    void TrackDeviceUevent(const Uevent& uevent);
-    void HandleBindInternal(std::string driver_name, std::string action, const Uevent& uevent);
+    void TrackDeviceUevent(const Uevent& uevent) EXCLUDES(device_update_lock_);
+    void HandleBindInternal(std::string driver_name, std::string action, const Uevent& uevent)
+            EXCLUSIVE_LOCKS_REQUIRED(device_update_lock_);
 
-    std::vector<Permissions> dev_permissions_;
-    std::vector<SysfsPermissions> sysfs_permissions_;
-    std::vector<Subsystem> drivers_;
-    std::vector<Subsystem> subsystems_;
+    const std::vector<Permissions> dev_permissions_;
+    const std::vector<SysfsPermissions> sysfs_permissions_;
+    const std::vector<Subsystem> drivers_;
+    const std::vector<Subsystem> subsystems_;
+    const std::string boot_part_uuid_;
+
+    // These non const members are modified only at initialization or test
     std::set<std::string> boot_devices_;
-    std::string boot_part_uuid_;
     bool found_boot_part_uuid_;
     bool skip_restorecon_;
     std::string sysfs_mount_point_;
 
-    std::vector<TrackedUevent> tracked_uevents_;
-    std::map<std::string, std::string> bound_drivers_;
+    std::mutex device_update_lock_;
+    std::vector<TrackedUevent> tracked_uevents_ GUARDED_BY(device_update_lock_);
+    std::map<std::string, std::string> bound_drivers_ GUARDED_BY(device_update_lock_);
 };
 
 // Exposed for testing

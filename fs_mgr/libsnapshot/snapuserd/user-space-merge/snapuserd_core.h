@@ -45,6 +45,7 @@
 #include <storage_literals/storage_literals.h>
 #include <system/thread_defs.h>
 #include <user-space-merge/handler_manager.h>
+#include "snapuserd/snapuserd_common.h"
 #include "snapuserd_readahead.h"
 #include "snapuserd_verify.h"
 
@@ -57,8 +58,6 @@ using namespace android::storage_literals;
 
 static constexpr size_t PAYLOAD_BUFFER_SZ = (1UL << 20);
 static_assert(PAYLOAD_BUFFER_SZ >= BLOCK_SZ);
-
-static constexpr int kNumWorkerThreads = 4;
 
 #define SNAP_LOG(level) LOG(level) << misc_name_ << ": "
 #define SNAP_PLOG(level) PLOG(level) << misc_name_ << ": "
@@ -216,7 +215,10 @@ class SnapshotHandler : public std::enable_shared_from_this<SnapshotHandler> {
     std::mutex lock_;
     std::condition_variable cv;
 
-    // Lock the buffer used for snapshot-merge
+    // Lock the buffer used for snapshot-merge.
+    //
+    // Lock ordering: If both buffer_lock_ and MergeGroupState::m_lock need
+    // to be held, buffer_lock_ MUST be acquired first.
     std::mutex buffer_lock_;
 
     void* mapped_addr_;
@@ -245,8 +247,6 @@ class SnapshotHandler : public std::enable_shared_from_this<SnapshotHandler> {
     bool merge_monitored_ = false;
     bool attached_ = false;
     bool scratch_space_ = false;
-    int num_worker_threads_ = kNumWorkerThreads;
-    bool perform_verification_ = true;
     bool resume_merge_ = false;
     bool merge_complete_ = false;
     HandlerOptions handler_options_;

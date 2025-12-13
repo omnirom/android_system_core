@@ -26,6 +26,7 @@
 #include <android-base/parseint.h>
 #include <android-base/properties.h>
 #include <android-base/strings.h>
+#include <com_android_libsnapshot.h>
 #include <fs_mgr/roots.h>
 #include <liblp/property_fetcher.h>
 
@@ -298,6 +299,11 @@ bool GetSkipVerificationProperty() {
     return fetcher->GetBoolProperty("ro.virtual_ab.skip_verification", false);
 }
 
+bool GetUblkEnabledProperty() {
+    auto fetcher = IPropertyFetcher::GetInstance();
+    return fetcher->GetBoolProperty("ro.virtual_ab.ublk.enabled", false);
+}
+
 std::string GetOtherPartitionName(const std::string& name) {
     auto suffix = android::fs_mgr::GetPartitionSlotSuffix(name);
     CHECK(suffix == "_a" || suffix == "_b");
@@ -314,6 +320,16 @@ bool IsDmSnapshotTestingEnabled() {
 bool KernelSupportsCompressedSnapshots() {
     auto& dm = DeviceMapper::Instance();
     return dm.GetTargetByName("user", nullptr);
+}
+
+static bool IsDebuggable() {
+    return android::base::GetBoolProperty("ro.debuggable", false);
+}
+
+bool GetDebugFlag(const std::string& flag) {
+    auto fetcher = IPropertyFetcher::GetInstance();
+    std::string prop_name = "persist.virtual_ab.testing." + flag;
+    return IsDebuggable() && fetcher->GetBoolProperty(prop_name, false);
 }
 
 }  // namespace snapshot

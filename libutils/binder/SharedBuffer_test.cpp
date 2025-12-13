@@ -14,16 +14,36 @@
  * limitations under the License.
  */
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include <memory>
 #include <stdint.h>
+
+#include <utils/AllocatorTracker.h>
 
 #include "SharedBuffer.h"
 
 extern "C" void __hwasan_init() __attribute__((weak));
 #define SKIP_WITH_HWASAN \
     if (&__hwasan_init != 0) GTEST_SKIP()
+
+#ifdef ANDROID_UTILS_CUSTOM_ALLOCATOR
+
+using ::testing::_;
+
+// A simple allocator that can be used to check that the allocator is being
+// called when expected.
+// A simple allocator that always returns nullptr.
+class MockAllocator : public android::Allocator {
+  public:
+    MOCK_METHOD(void*, allocate, (size_t size, size_t alignment), (override));
+    MOCK_METHOD(void*, reallocate, (void* ptr, size_t size), (override));
+    MOCK_METHOD(void, deallocate, (void* ptr), (override));
+    MOCK_METHOD(void, abort, (), (override));
+};
+
+#endif  // ANDROID_UTILS_CUSTOM_ALLOCATOR
 
 TEST(SharedBufferTest, alloc_death) {
     EXPECT_DEATH(android::SharedBuffer::alloc(SIZE_MAX), "");
@@ -58,6 +78,14 @@ TEST(SharedBufferTest, alloc_zero_size) {
     buf->release();
 }
 
+TEST(SharedBufferTest, editResize) {
+    android::SharedBuffer* buf = android::SharedBuffer::alloc(10);
+    EXPECT_EQ(10U, buf->size());
+    buf = buf->editResize(20);
+    EXPECT_EQ(20U, buf->size());
+    buf->release();
+}
+
 TEST(SharedBufferTest, editResize_death) {
     android::SharedBuffer* buf = android::SharedBuffer::alloc(10);
     EXPECT_DEATH(buf->editResize(SIZE_MAX - sizeof(android::SharedBuffer)), "");
@@ -84,3 +112,83 @@ TEST(SharedBufferTest, editResize_zero_size) {
     ASSERT_EQ(0U, buf->size());
     buf->release();
 }
+
+#ifdef ANDROID_UTILS_CUSTOM_ALLOCATOR
+TEST(SharedBufferTest, custom_allocator) {
+    MockAllocator allocator;
+    android::AllocatorTracker::getInstance().setAllocator(&allocator);
+
+    // Expect allocate to be called and return memory allocated by malloc.
+    EXPECT_CALL(allocator, allocate(_, _)).WillOnce([](size_t size, size_t /* alignment */) {
+        return malloc(size);
+    });
+
+    android::SharedBuffer* buf = android::SharedBuffer::alloc(10);
+    ASSERT_NE(buf, nullptr);
+
+    // Expect deallocate to be called and free the memory.
+    EXPECT_CALL(allocator, deallocate(_)).WillOnce([](void* ptr) { free(ptr); });
+
+    // This should trigger the deallocate call.
+    buf->release();
+
+    android::AllocatorTracker::getInstance().setAllocator(nullptr);
+}
+
+TEST(SharedBufferTest, editResize_custom_allocator) {
+    MockAllocator allocator;
+    android::AllocatorTracker::getInstance().setAllocator(&allocator);
+
+    // Expect allocate to be called and return memory allocated by malloc.
+    EXPECT_CALL(allocator, allocate(_, _)).WillOnce([](size_t size, size_t) {
+        return malloc(size);
+    });
+
+    android::SharedBuffer* buf = android::SharedBuffer::alloc(10);
+    ASSERT_NE(buf, nullptr);
+
+    // Expect reallocate to be called and return memory allocated by realloc.
+    EXPECT_CALL(allocator, reallocate(_, _)).WillOnce([](void* ptr, size_t size) {
+        return realloc(ptr, size);
+    });
+    buf = buf->editResize(20);
+    ASSERT_NE(buf, nullptr);
+    EXPECT_EQ(buf->size(), 20U);
+
+    // Expect deallocate to be called and free the memory.
+    EXPECT_CALL(allocator, deallocate(_)).WillOnce([](void* ptr) { free(ptr); });
+
+    // This should trigger the deallocate call.
+    buf->release();
+
+    android::AllocatorTracker::getInstance().setAllocator(nullptr);
+}
+
+TEST(SharedBufferTest, editResize_custom_allocator_fail) {
+    MockAllocator allocator;
+    android::AllocatorTracker::getInstance().setAllocator(&allocator);
+
+    // Expect allocate to be called and return memory allocated by malloc.
+    EXPECT_CALL(allocator, allocate(_, _)).WillOnce([](size_t size, size_t /* alignment */) {
+        return malloc(size);
+    });
+
+    android::SharedBuffer* buf = android::SharedBuffer::alloc(10);
+    ASSERT_NE(buf, nullptr);
+
+    // Expect reallocate to be called - will fail due to OOM
+    EXPECT_CALL(allocator, reallocate(_, _)).WillOnce([](void* ptr, size_t /* size */) {
+        free(ptr);
+        return nullptr;  // simulate OOM
+    });
+    // Expect allocate to be called once reallocate fails - will fail due to OOM as well
+    EXPECT_CALL(allocator, allocate(_, _)).WillOnce([](size_t /* size */, size_t /* alignment */) {
+        return nullptr;
+    });
+    buf = buf->editResize(20);
+    ASSERT_EQ(buf, nullptr);
+
+    android::AllocatorTracker::getInstance().setAllocator(nullptr);
+}
+
+#endif  // ANDROID_UTILS_CUSTOM_ALLOCATOR

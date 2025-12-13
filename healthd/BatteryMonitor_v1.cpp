@@ -141,18 +141,6 @@ BatteryMonitor::BatteryMonitor()
 
 BatteryMonitor::~BatteryMonitor() {}
 
-HealthInfo_1_0 BatteryMonitor::getHealthInfo_1_0() const {
-    HealthInfo_1_0 health_info_1_0;
-    translateToHidl(*mHealthInfo, &health_info_1_0);
-    return health_info_1_0;
-}
-
-HealthInfo_2_0 BatteryMonitor::getHealthInfo_2_0() const {
-    HealthInfo_2_0 health_info_2_0;
-    translateToHidl(*mHealthInfo, &health_info_2_0);
-    return health_info_2_0;
-}
-
 HealthInfo_2_1 BatteryMonitor::getHealthInfo_2_1() const {
     HealthInfo_2_1 health_info_2_1;
     translateToHidl(*mHealthInfo, &health_info_2_1);

@@ -224,18 +224,6 @@ std::unique_ptr<MetadataBuilder> MetadataBuilder::NewForUpdate(const IPartitionO
         return nullptr;
     }
 
-    // On retrofit DAP devices, modify the metadata so that it is suitable for being written
-    // to the target slot later. We detect retrofit DAP devices by checking the super partition
-    // name and system properties.
-    // See comments for UpdateMetadataForOtherSuper.
-    auto super_device = GetMetadataSuperBlockDevice(*metadata.get());
-    if (android::fs_mgr::GetBlockDevicePartitionName(*super_device) != "super" &&
-        IsRetrofitDynamicPartitionsDevice()) {
-        if (!UpdateMetadataForOtherSuper(metadata.get(), source_slot_number, target_slot_number)) {
-            return nullptr;
-        }
-    }
-
     if (IPropertyFetcher::GetInstance()->GetBoolProperty("ro.virtual_ab.enabled", false)) {
         if (always_keep_source_slot) {
             // always_keep_source_slot implies the target build does not support snapshots.
@@ -254,50 +242,7 @@ std::unique_ptr<MetadataBuilder> MetadataBuilder::NewForUpdate(const IPartitionO
     return New(*metadata.get(), &opener);
 }
 
-// For retrofit DAP devices, there are (conceptually) two super partitions. We'll need to translate
-// block device and group names to update their slot suffixes.
-// (On the other hand, On non-retrofit DAP devices there is only one location for metadata: the
-// super partition. update_engine will remove and resize partitions as needed.)
-bool MetadataBuilder::UpdateMetadataForOtherSuper(LpMetadata* metadata, uint32_t source_slot_number,
-                                                  uint32_t target_slot_number) {
-    // Clear partitions and extents, since they have no meaning on the target
-    // slot. We also clear groups since they are re-added during OTA.
-    metadata->partitions.clear();
-    metadata->extents.clear();
-    metadata->groups.clear();
-
-    std::string source_slot_suffix = SlotSuffixForSlotNumber(source_slot_number);
-    std::string target_slot_suffix = SlotSuffixForSlotNumber(target_slot_number);
-
-    // Translate block devices.
-    auto source_block_devices = std::move(metadata->block_devices);
-    for (const auto& source_block_device : source_block_devices) {
-        std::string partition_name =
-                android::fs_mgr::GetBlockDevicePartitionName(source_block_device);
-        std::string slot_suffix = GetPartitionSlotSuffix(partition_name);
-        if (slot_suffix.empty() || slot_suffix != source_slot_suffix) {
-            // This should never happen. It means that the source metadata
-            // refers to a target or unknown block device.
-            LERROR << "Invalid block device for slot " << source_slot_suffix << ": "
-                   << partition_name;
-            return false;
-        }
-        std::string new_name =
-                partition_name.substr(0, partition_name.size() - slot_suffix.size()) +
-                target_slot_suffix;
-
-        auto new_device = source_block_device;
-        if (!UpdateBlockDevicePartitionName(&new_device, new_name)) {
-            LERROR << "Partition name too long: " << new_name;
-            return false;
-        }
-        metadata->block_devices.emplace_back(new_device);
-    }
-
-    return true;
-}
-
-MetadataBuilder::MetadataBuilder() : auto_slot_suffixing_(false) {
+MetadataBuilder::MetadataBuilder() {
     memset(&geometry_, 0, sizeof(geometry_));
     geometry_.magic = LP_METADATA_GEOMETRY_MAGIC;
     geometry_.struct_size = sizeof(geometry_);
@@ -789,9 +734,7 @@ std::vector<Interval> MetadataBuilder::PrioritizeSecondHalfOfSuper(
     std::vector<Interval> first_half;
     std::vector<Interval> second_half;
     for (const auto& region : free_list) {
-        // Note: deprioritze if not the main super partition. Even though we
-        // don't call this for retrofit devices, we will allow adding additional
-        // block devices on non-retrofit devices.
+        // Note: deprioritze if not the main super partition.
         if (region.device_index != 0 || region.end <= midpoint) {
             first_half.emplace_back(region);
             continue;
@@ -884,9 +827,6 @@ std::unique_ptr<LpMetadata> MetadataBuilder::Export() {
     // Assign this early so the extent table can read it.
     for (const auto& block_device : block_devices_) {
         metadata->block_devices.emplace_back(block_device);
-        if (auto_slot_suffixing_) {
-            metadata->block_devices.back().flags |= LP_BLOCK_DEVICE_SLOT_SUFFIXED;
-        }
     }
 
     std::map<std::string, size_t> group_indices;
@@ -896,9 +836,6 @@ std::unique_ptr<LpMetadata> MetadataBuilder::Export() {
         if (group->name().size() > sizeof(out.name)) {
             LERROR << "Partition group name is too long: " << group->name();
             return nullptr;
-        }
-        if (auto_slot_suffixing_ && group->name() != kDefaultGroup) {
-            out.flags |= LP_GROUP_SLOT_SUFFIXED;
         }
         strncpy(out.name, group->name().c_str(), sizeof(out.name));
         out.maximum_size = group->maximum_size();
@@ -931,9 +868,6 @@ std::unique_ptr<LpMetadata> MetadataBuilder::Export() {
         part.first_extent_index = static_cast<uint32_t>(metadata->extents.size());
         part.num_extents = static_cast<uint32_t>(partition->extents().size());
         part.attributes = partition->attributes();
-        if (auto_slot_suffixing_) {
-            part.attributes |= LP_PARTITION_ATTR_SLOT_SUFFIXED;
-        }
 
         auto iter = group_indices.find(partition->group_name());
         if (iter == group_indices.end()) {
@@ -1202,10 +1136,6 @@ bool MetadataBuilder::ImportPartition(const LpMetadata& metadata,
     return true;
 }
 
-void MetadataBuilder::SetAutoSlotSuffixing() {
-    auto_slot_suffixing_ = true;
-}
-
 void MetadataBuilder::SetVirtualABDeviceFlag() {
     RequireExpandedMetadataHeader();
     header_.flags |= LP_HEADER_FLAG_VIRTUAL_AB_DEVICE;
@@ -1222,11 +1152,6 @@ void MetadataBuilder::SetOverlaysActiveFlag(bool flag) {
 
 bool MetadataBuilder::IsABDevice() {
     return !IPropertyFetcher::GetInstance()->GetProperty("ro.boot.slot_suffix", "").empty();
-}
-
-bool MetadataBuilder::IsRetrofitDynamicPartitionsDevice() {
-    return IPropertyFetcher::GetInstance()->GetBoolProperty("ro.boot.dynamic_partitions_retrofit",
-                                                            false);
 }
 
 bool MetadataBuilder::ShouldHalveSuper() const {

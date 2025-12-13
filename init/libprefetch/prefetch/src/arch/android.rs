@@ -14,7 +14,7 @@ const PREFETCH_RECORD_PROPERTY_STOP: &str = "prefetch_boot.record_stop";
 
 fn is_prefetch_enabled() -> Result<bool, Error> {
     rustutils::system_properties::read_bool("ro.prefetch_boot.enabled", false).map_err(|e| {
-        Error::Custom { error: format!("Failed to read ro.prefetch_boot.enabled: {}", e) }
+        Error::Custom { error: format!("Failed to read ro.prefetch_boot.enabled: {e}") }
     })
 }
 
@@ -30,7 +30,7 @@ fn wait_for_property_true(
 /// Wait for record to stop
 pub fn wait_for_record_stop() {
     wait_for_property_true(PREFETCH_RECORD_PROPERTY_STOP, None).unwrap_or_else(|e| {
-        warn!("failed to wait for {} with error: {}", PREFETCH_RECORD_PROPERTY_STOP, e)
+        warn!("failed to wait for {PREFETCH_RECORD_PROPERTY_STOP} with error: {e}")
     });
 }
 
@@ -49,7 +49,7 @@ pub fn can_perform_replay(pack_path: &Path, fingerprint_path: &Path) -> Result<b
 
     let current_device_fingerprint = rustutils::system_properties::read("ro.build.fingerprint")
         .map_err(|e| Error::Custom {
-            error: format!("Failed to read ro.build.fingerprint: {}", e),
+            error: format!("Failed to read ro.build.fingerprint: {e}"),
         })?;
 
     Ok(current_device_fingerprint.is_some_and(|fp| fp == saved_fingerprint.trim()))

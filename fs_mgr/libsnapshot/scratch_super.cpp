@@ -60,7 +60,7 @@ using namespace android::storage_literals;
 namespace android {
 namespace snapshot {
 
-static bool UmountScratch() {
+bool UmountScratch(const bool cleanup_ota_dir) {
     Fstab fstab;
     if (!ReadFstabFromProcMounts(&fstab)) {
         LOG(ERROR) << "Cannot read /proc/mounts";
@@ -72,10 +72,12 @@ static bool UmountScratch() {
 
     auto ota_dir = std::string(kOtaMetadataMount) + "/" + "ota";
 
-    std::error_code ec;
-    if (std::filesystem::remove_all(ota_dir, ec) == static_cast<std::uintmax_t>(-1)) {
-        LOG(ERROR) << "Failed to remove OTA directory: " << ec.message();
-        return false;
+    if (cleanup_ota_dir) {
+        std::error_code ec;
+        if (std::filesystem::remove_all(ota_dir, ec) == static_cast<std::uintmax_t>(-1)) {
+            LOG(ERROR) << "Failed to remove OTA directory: " << ec.message();
+            return false;
+        }
     }
 
     if (umount(kOtaMetadataMount) != 0) {
@@ -88,7 +90,7 @@ static bool UmountScratch() {
 }
 
 bool CleanupScratchOtaMetadataIfPresent(const ISnapshotManager::IDeviceInfo* info) {
-    if (!UmountScratch()) {
+    if (!UmountScratch(true)) {
         return false;
     }
 
@@ -322,8 +324,7 @@ bool IsScratchOtaMetadataOnSuper() {
     auto source_slot = fs_mgr_get_slot_suffix();
     auto source_slot_number = SlotNumberForSlotSuffix(source_slot);
 
-    const auto super_device =
-            kPhysicalDevice + fs_mgr_get_super_partition_name(!source_slot_number);
+    const auto super_device = kPhysicalDevice + fs_mgr_get_super_partition_name();
 
     auto metadata = android::fs_mgr::ReadMetadata(super_device, !source_slot_number);
     if (!metadata) {

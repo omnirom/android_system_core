@@ -40,6 +40,7 @@ prebuilt_etc {
         "platform-bootclasspath",
         "init.boringssl.zygote64.rc",
         "init.boringssl.zygote64_32.rc",
+        "init-perfetto.rc",
     ],
 }
 
@@ -68,11 +69,61 @@ prebuilt_etc {
     no_full_install: true,
 }
 
+// In your BoardConfig.mk you can use `soong_config_set` to set the
+// additional properties.
+//
+// For example:
+// $(call soong_config_set,adb,additional_debug_properties,ro.foo=1 ro.bar=2)
+ADDITIONAL_ADB_DEBUG_PROPERTIES = select(soong_config_variable("adb", "additional_debug_properties"), {
+    any @ props: props,
+    default: "",
+})
+
+genrule {
+    name: "adb_debug.prop.gen",
+    srcs: ["adb_debug.prop.in"],
+    out: ["adb_debug.prop"],
+    // Unfortunately there is no `args` string list parameter for `genrule` and
+    // there is no shell quote / string list concat methods we can use from
+    // blueprint, so the best we can do is hope that
+    // ADDITIONAL_ADB_DEBUG_PROPERTIES doesn't contain any special shell
+    // characters.
+    cmd: "ADDITIONAL_ADB_DEBUG_PROPERTIES='" + ADDITIONAL_ADB_DEBUG_PROPERTIES + "';" +
+    "cp -f $(in) $(out) && " +
+    "if [ -n \"$${ADDITIONAL_ADB_DEBUG_PROPERTIES}\" ]; then " +
+    "echo \"# Additional board specific properties\" >> $(out); " +
+    "for prop in $${ADDITIONAL_ADB_DEBUG_PROPERTIES}; do " +
+    "echo \"$${prop}\" >> $(out); " +
+    "done; " +
+    "fi",
+}
+
 // adb_debug.prop in debug ramdisk
 prebuilt_root {
     name: "adb_debug.prop",
-    src: "adb_debug.prop",
+    src: ":adb_debug.prop.gen",
     debug_ramdisk: true,
+}
+
+// adb_debug.prop in test_harness ramdisk
+prebuilt_root {
+    name: "adb_debug.test_harness.prop",
+    src: ":adb_debug.test_harness.prop.gen",
+    filename: "adb_debug.prop",
+    test_harness_ramdisk: true,
+}
+
+genrule {
+    name: "adb_debug.test_harness.prop.gen",
+    srcs: [":adb_debug.prop.gen"],
+    out: ["adb_debug.prop"],
+    cmd: "cp -f $(in) $(out) && " +
+        "echo \"\" >> $(out) && " + // empty line
+        "echo \"#\" >> $(out) && " +
+        "echo \"# ADDITIONAL TEST HARNESS PROPERTIES\" >> $(out) && " +
+        "echo \"#\" >> $(out) && " +
+        "echo \"ro.audio.silent=1\" >> $(out) && " +
+        "echo \"ro.test_harness=1\" >> $(out)",
 }
 
 prebuilt_etc {
@@ -124,6 +175,12 @@ prebuilt_etc {
 }
 
 prebuilt_etc {
+    name: "init-perfetto.rc",
+    src: "init-perfetto.rc",
+    sub_dir: "init",
+}
+
+prebuilt_etc {
     name: "asan.options",
     src: "asan.options",
 }
@@ -149,10 +206,13 @@ EXPORT_GLOBAL_ASAN_OPTIONS = select(soong_config_variable("ANDROID", "ASAN_ENABL
     default: "",
 })
 
+// LINT.IfChange
+// N.B. keep this in sync with GLOBAL_HWASAN_OPTIONS in system/core/init/Android.bp
 EXPORT_GLOBAL_HWASAN_OPTIONS = select(soong_config_variable("ANDROID", "HWASAN_ENABLED"), {
     true: "export HWASAN_OPTIONS heap_history_size=1023,stack_history_size=512,export_memory_stats=0,max_malloc_fill_size=131072,malloc_fill_byte=0",
     default: "",
 })
+// LINT.ThenChange(/init/Android.bp)
 
 EXPORT_GLOBAL_GCOV_OPTIONS = select(soong_config_variable("ANDROID", "GCOV_COVERAGE"), {
     true: "export GCOV_PREFIX /data/misc/trace",

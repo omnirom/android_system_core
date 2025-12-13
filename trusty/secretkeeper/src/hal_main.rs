@@ -92,7 +92,7 @@ impl SerializedChannel for TipcChannel {
 
 fn main() {
     if let Err(HalServiceError(e)) = inner_main() {
-        panic!("HAL service failed: {:?}", e);
+        panic!("HAL service failed: {e:?}");
     }
 }
 
@@ -106,7 +106,7 @@ fn inner_main() -> Result<(), HalServiceError> {
     );
     // Redirect panic messages to logcat.
     panic::set_hook(Box::new(|panic_info| {
-        error!("{}", panic_info);
+        error!("{panic_info}");
     }));
 
     info!("Trusty Secretkeeper HAL service is starting.");
@@ -118,8 +118,7 @@ fn inner_main() -> Result<(), HalServiceError> {
     let ag_connection = trusty::TipcChannel::connect(DEFAULT_DEVICE, AG_TIPC_SERVICE_PORT)
         .map_err(|e| {
             HalServiceError(format!(
-                "Failed to connect to Trusty port {AG_TIPC_SERVICE_PORT} because of {:?}.",
-                e
+                "Failed to connect to Trusty port {AG_TIPC_SERVICE_PORT} because of {e:?}."
             ))
         })?;
     let ag_tipc_channel = TipcChannel::new(ag_connection);
@@ -127,8 +126,7 @@ fn inner_main() -> Result<(), HalServiceError> {
     let sk_connection = trusty::TipcChannel::connect(DEFAULT_DEVICE, SK_TIPC_SERVICE_PORT)
         .map_err(|e| {
             HalServiceError(format!(
-                "Failed to connect to Trusty port {SK_TIPC_SERVICE_PORT} because of {:?}.",
-                e
+                "Failed to connect to Trusty port {SK_TIPC_SERVICE_PORT} because of {e:?}."
             ))
         })?;
     let sk_tipc_channel = TipcChannel::new(sk_connection);
@@ -138,7 +136,7 @@ fn inner_main() -> Result<(), HalServiceError> {
     let service_name =
         format!("{}/{}", <BpSecretkeeper as ISecretkeeper>::get_descriptor(), SERVICE_INSTANCE);
     binder::add_service(&service_name, service.as_binder()).map_err(|e| {
-        HalServiceError(format!("Failed to register service {} because of {:?}.", service_name, e))
+        HalServiceError(format!("Failed to register service {service_name} because of {e:?}."))
     })?;
 
     info!("Successfully registered Secretkeeper HAL service.");

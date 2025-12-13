@@ -25,6 +25,8 @@
 #include <android-base/logging.h>
 #include <android-base/parseint.h>
 #include <android-base/unique_fd.h>
+#include <fs_mgr.h>
+#include <fs_mgr_dm_linear.h>
 #include <libdm/dm.h>
 
 #include <fstream>
@@ -48,6 +50,7 @@ static int Usage(void) {
     std::cerr << "       dmctl -f file" << std::endl;
     std::cerr << "commands:" << std::endl;
     std::cerr << "  create <dm-name> [-ro] <targets...>" << std::endl;
+    std::cerr << "  create-from-super <partition> <dm-name> [-ro]" << std::endl;
     std::cerr << "  delete <dm-name>" << std::endl;
     std::cerr << "  list <devices | targets> [-v]" << std::endl;
     std::cerr << "  message <dm-name> <sector> <message>" << std::endl;
@@ -615,6 +618,40 @@ static int ResumeCmdHandler(int argc, char** argv) {
     return 0;
 }
 
+static int CreateFromSuperCmdHandler(int argc, char** argv) {
+    if (argc < 2 || argc > 3) {
+        std::cerr << "Invalid arguments, see \'dmctl help\'" << std::endl;
+        return -EINVAL;
+    }
+
+    bool writable = true;
+    if (argc >= 3) {
+        if (argv[2] != "-ro"s) {
+            std::cerr << "Expected -ro" << std::endl;
+            return -EINVAL;
+        }
+        writable = false;
+    }
+
+    auto super_device = "/dev/block/by-name/" + fs_mgr_get_super_partition_name();
+    auto slot_number = android::fs_mgr::SlotNumberForSlotSuffix(fs_mgr_get_slot_suffix());
+    android::fs_mgr::CreateLogicalPartitionParams params = {
+            .block_device = super_device,
+            .metadata_slot = {slot_number},
+            .partition_name = argv[0],
+            .force_writable = writable,
+            .device_name = argv[1],
+    };
+
+    std::string path;
+    if (!android::fs_mgr::CreateLogicalPartition(params, &path)) {
+        std::cerr << "Failed to create partition" << std::endl;
+        return -EIO;
+    }
+    std::cout << path << std::endl;
+    return 0;
+}
+
 static int SuspendCmdHandler(int argc, char** argv) {
     if (argc != 1) {
         std::cerr << "Invalid arguments, see \'dmctl help\'" << std::endl;
@@ -632,6 +669,7 @@ static int SuspendCmdHandler(int argc, char** argv) {
 static std::map<std::string, std::function<int(int, char**)>> cmdmap = {
         // clang-format off
         {"create", DmCreateCmdHandler},
+        {"create-from-super", CreateFromSuperCmdHandler},
         {"delete", DmDeleteCmdHandler},
         {"replace", DmReplaceCmdHandler},
         {"list", DmListCmdHandler},

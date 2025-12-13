@@ -95,6 +95,34 @@ void BootEventRecordStore::AddBootEventWithValue(const std::string& event, int32
   close(record_fd);
 }
 
+void BootEventRecordStore::AddBootCompleteEvents(const std::string& prefix, int32_t value) {
+  RemovePreviousBootCompleteEvents();
+  // The *_no_encryption events are emitted unconditionally, since they are left
+  // over from a time when encryption meant "full-disk encryption".  But Android
+  // now always uses file-based encryption instead of full-disk encryption.  At
+  // some point, these misleading and redundant events should be removed.
+  AddBootEventWithValue(prefix + "_no_encryption", value);
+
+  // Record the total time from device startup to boot complete.
+  AddBootEventWithValue(prefix, value);
+}
+
+void BootEventRecordStore::RemovePreviousBootCompleteEvents() {
+  for (const auto& boot_prefix :
+       {kBootCompletePrefix, kFactoryResetBootCompletePrefix, kOtaBootCompletePrefix}) {
+    for (const auto& record_name :
+         {std::string(boot_prefix), std::string(boot_prefix) + "_no_encryption"}) {
+      std::string record_path = GetBootEventPath(record_name);
+      if (remove(record_path.c_str()) == -1) {
+        // Do not report error if the file has not exist in the first place.
+        if (errno != ENOENT) {
+          PLOG(ERROR) << "Failed to remove " << record_path;
+        }
+      }
+    }
+  }
+}
+
 bool BootEventRecordStore::GetBootEvent(const std::string& event, BootEventRecord* record) const {
   CHECK_NE(static_cast<BootEventRecord*>(nullptr), record);
   CHECK(!event.empty());

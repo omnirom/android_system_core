@@ -72,6 +72,7 @@ enum class InterceptStatus : uint8_t {
   kFailed,
   kStarted,
   kRegistered,
+  kTimeout,
 };
 
 // Sent either immediately upon failure, or when the intercept has been used.
@@ -81,17 +82,14 @@ struct InterceptResponse {
 };
 
 // Sent from handler to crash_dump via pipe.
-struct __attribute__((__packed__)) CrashInfoHeader {
+struct __attribute__((__packed__)) CrashInfoDataCommon {
   uint32_t version;
-};
-
-struct __attribute__((__packed__)) CrashInfoDataStatic {
   siginfo_t siginfo;
   ucontext_t ucontext;
   uintptr_t abort_msg_address;
 };
 
-struct __attribute__((__packed__)) CrashInfoDataDynamic : public CrashInfoDataStatic {
+struct __attribute__((__packed__)) CrashInfoDataDynamic {
   uintptr_t fdsan_table_address;
   uintptr_t gwp_asan_state;
   uintptr_t gwp_asan_metadata;
@@ -105,9 +103,8 @@ struct __attribute__((__packed__)) CrashInfoDataDynamic : public CrashInfoDataSt
 };
 
 struct __attribute__((__packed__)) CrashInfo {
-  CrashInfoHeader header;
-  union {
-    CrashInfoDataStatic s;
-    CrashInfoDataDynamic d;
-  } data;
+  // Present in both static executable and dynamic executable crashes.
+  CrashInfoDataCommon c;
+  // Present in only dynamic exectuable crashes.
+  CrashInfoDataDynamic d;
 };

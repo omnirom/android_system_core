@@ -51,7 +51,6 @@ class FastbootDevice {
     std::vector<char>& download_data() { return download_data_; }
     Transport* get_transport() { return transport_.get(); }
     BootControlClient* boot_control_hal() const { return boot_control_hal_.get(); }
-    BootControlClient* boot1_1() const;
     std::shared_ptr<aidl::android::hardware::fastboot::IFastboot> fastboot_hal() {
         return fastboot_hal_;
     }

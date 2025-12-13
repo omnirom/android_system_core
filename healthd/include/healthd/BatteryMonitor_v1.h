@@ -63,8 +63,6 @@ class BatteryMonitor {
     status_t getProperty(int id, struct BatteryProperty *val);
     void dumpState(int fd);
 
-    android::hardware::health::V1_0::HealthInfo getHealthInfo_1_0() const;
-    android::hardware::health::V2_0::HealthInfo getHealthInfo_2_0() const;
     android::hardware::health::V2_1::HealthInfo getHealthInfo_2_1() const;
     const aidl::android::hardware::health::HealthInfo& getHealthInfo() const;
 

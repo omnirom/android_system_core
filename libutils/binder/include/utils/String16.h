@@ -310,36 +310,44 @@ inline int String16::compare(const String16& other) const
 
 inline bool String16::operator<(const String16& other) const
 {
+    if (mString == other.mString) return false;
     return strzcmp16(mString, size(), other.mString, other.size()) < 0;
 }
 
 inline bool String16::operator<=(const String16& other) const
 {
+    if (mString == other.mString) return true;
     return strzcmp16(mString, size(), other.mString, other.size()) <= 0;
 }
 
 inline bool String16::operator==(const String16& other) const
 {
+    if (mString == other.mString) return true;
     return strzcmp16(mString, size(), other.mString, other.size()) == 0;
 }
 
 inline bool String16::operator!=(const String16& other) const
 {
-    return strzcmp16(mString, size(), other.mString, other.size()) != 0;
+    return !operator==(other);
 }
 
 inline bool String16::operator>=(const String16& other) const
 {
+    if (mString == other.mString) return true;
     return strzcmp16(mString, size(), other.mString, other.size()) >= 0;
 }
 
 inline bool String16::operator>(const String16& other) const
 {
+    if (mString == other.mString) return false;
     return strzcmp16(mString, size(), other.mString, other.size()) > 0;
 }
 
 #if __cplusplus >= 202002L
 inline std::strong_ordering String16::operator<=>(const String16& other) const {
+    if (mString == other.mString) {
+        return std::strong_ordering::equal;
+    }
     int result = strzcmp16(mString, size(), other.mString, other.size());
     if (result == 0) {
         return std::strong_ordering::equal;
@@ -353,36 +361,44 @@ inline std::strong_ordering String16::operator<=>(const String16& other) const {
 
 inline bool String16::operator<(const char16_t* other) const
 {
+    if (mString == other) return false;
     return strcmp16(mString, other) < 0;
 }
 
 inline bool String16::operator<=(const char16_t* other) const
 {
+    if (mString == other) return true;
     return strcmp16(mString, other) <= 0;
 }
 
 inline bool String16::operator==(const char16_t* other) const
 {
+    if (mString == other) return true;
     return strcmp16(mString, other) == 0;
 }
 
 inline bool String16::operator!=(const char16_t* other) const
 {
-    return strcmp16(mString, other) != 0;
+    return !operator==(other);
 }
 
 inline bool String16::operator>=(const char16_t* other) const
 {
+    if (mString == other) return true;
     return strcmp16(mString, other) >= 0;
 }
 
 inline bool String16::operator>(const char16_t* other) const
 {
+    if (mString == other) return false;
     return strcmp16(mString, other) > 0;
 }
 
 #if __cplusplus >= 202002L
 inline std::strong_ordering String16::operator<=>(const char16_t* other) const {
+    if (mString == other) {
+        return std::strong_ordering::equal;
+    }
     int result = strcmp16(mString, other);
     if (result == 0) {
         return std::strong_ordering::equal;

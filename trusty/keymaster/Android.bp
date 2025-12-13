@@ -101,8 +101,10 @@ cc_defaults {
         "keymint/TrustySharedSecret.cpp",
         "keymint/service.cpp",
     ],
+    defaults: [
+        "keymint_cpp_impl_hal_aidl_ndk_shared",
+    ],
     shared_libs: [
-        "android.hardware.security.keymint-V4-ndk",
         "android.hardware.security.rkp-V3-ndk",
         "android.hardware.security.secureclock-V1-ndk",
         "android.hardware.security.sharedsecret-V1-ndk",

@@ -41,7 +41,8 @@ using android::base::WriteStringToFd;
 namespace android {
 namespace init {
 
-std::string persistent_property_filename = "/data/property/persistent_properties";
+[[clang::no_destroy]] std::string persistent_property_filename =
+        "/data/property/persistent_properties";
 
 namespace {
 

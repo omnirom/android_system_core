@@ -166,6 +166,10 @@ TEST_F(LruCacheTest, Simple) {
     cache.put(1, "one");
     cache.put(2, "two");
     cache.put(3, "three");
+    EXPECT_TRUE(cache.contains(1));
+    EXPECT_TRUE(cache.contains(2));
+    EXPECT_TRUE(cache.contains(3));
+    EXPECT_FALSE(cache.contains(4));
     EXPECT_STREQ("one", cache.get(1));
     EXPECT_STREQ("two", cache.get(2));
     EXPECT_STREQ("three", cache.get(3));
@@ -195,6 +199,10 @@ TEST_F(LruCacheTest, RemoveLru) {
     EXPECT_STREQ("two", cache.get(2));
     EXPECT_STREQ("three", cache.get(3));
     EXPECT_EQ(2u, cache.size());
+
+    EXPECT_FALSE(cache.contains(1));
+    EXPECT_TRUE(cache.contains(2));
+    EXPECT_TRUE(cache.contains(3));
 }
 
 TEST_F(LruCacheTest, GetUpdatesLru) {

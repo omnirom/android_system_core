@@ -48,6 +48,7 @@
 #include <android-base/strings.h>
 #include <gtest/gtest.h>
 
+#include "fastboot.h"
 #include "fastboot_driver.h"
 #include "tcp.h"
 #include "usb.h"
@@ -182,10 +183,15 @@ void FastBootTest::TearDownSerial() {
 }
 
 void FastBootTest::ConnectTcpFastbootDevice() {
+    auto net_serial = ParseNetworkSerial(device_serial);
+    if (!net_serial.ok()) {
+        return;
+    }
+
     for (int i = 0; i < MAX_TCP_TRIES && !transport; i++) {
         std::string error;
         std::unique_ptr<Transport> tcp(
-                tcp::Connect(device_serial.substr(4), tcp::kDefaultPort, &error).release());
+                tcp::Connect(net_serial->address, net_serial->port, &error).release());
         if (tcp)
             transport = std::unique_ptr<TransportSniffer>(new TransportSniffer(std::move(tcp), 0));
         if (transport != nullptr) break;

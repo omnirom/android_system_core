@@ -521,36 +521,38 @@ bool ImageManager::MapImageDevice(const std::string& name,
         return false;
     }
 
-    auto image_header = GetImageHeaderPath(name);
-
 #ifndef __ANDROID_RAMDISK__
-    // If there is a device-mapper node wrapping the block device, then we're
-    // able to create another node around it; the dm layer does not carry the
-    // exclusion lock down the stack when a mount occurs.
-    //
-    // If there is no intermediate device-mapper node, then partitions cannot be
-    // opened writable due to sepolicy and exclusivity of having a mounted
-    // filesystem. This should only happen on devices with no encryption, or
-    // devices with FBE and no metadata encryption. For these cases we COULD
-    // perform normal writes to /data/gsi (which is unencrypted), but given that
-    // metadata encryption has been mandated since Android R, we don't actually
-    // support or test this.
-    //
-    // So, we validate here that /data is backed by device-mapper. This code
-    // isn't needed in recovery since there is no /data.
-    //
-    // If this logic sticks for a release, we can remove MapWithLoopDevice, as
-    // well as WrapUserdataIfNeeded in fs_mgr.
-    std::string block_device;
-    bool can_use_devicemapper;
-    if (!FiemapWriter::GetBlockDeviceForFile(image_header, &block_device, &can_use_devicemapper)) {
-        LOG(ERROR) << "Could not determine block device for " << image_header;
-        return false;
-    }
+    auto image_header = GetImageHeaderPath(name);
+    if (access(image_header.c_str(), F_OK) == 0) {
+        // If there is a device-mapper node wrapping the block device, then we're
+        // able to create another node around it; the dm layer does not carry the
+        // exclusion lock down the stack when a mount occurs.
+        //
+        // If there is no intermediate device-mapper node, then partitions cannot be
+        // opened writable due to sepolicy and exclusivity of having a mounted
+        // filesystem. This should only happen on devices with no encryption, or
+        // devices with FBE and no metadata encryption. For these cases we COULD
+        // perform normal writes to /data/gsi (which is unencrypted), but given that
+        // metadata encryption has been mandated since Android R, we don't actually
+        // support or test this.
+        //
+        // So, we validate here that /data is backed by device-mapper. This code
+        // isn't needed in recovery since there is no /data.
+        //
+        // If this logic sticks for a release, we can remove MapWithLoopDevice, as
+        // well as WrapUserdataIfNeeded in fs_mgr.
+        std::string block_device;
+        bool can_use_devicemapper;
+        if (!FiemapWriter::GetBlockDeviceForFile(image_header, &block_device,
+                                                 &can_use_devicemapper)) {
+            LOG(ERROR) << "Could not determine block device for " << image_header;
+            return false;
+        }
 
-    if (!can_use_devicemapper) {
-        LOG(ERROR) << "Cannot map image: /data must be mounted on top of device-mapper.";
-        return false;
+        if (!can_use_devicemapper) {
+            LOG(ERROR) << "Cannot map image: /data must be mounted on top of device-mapper.";
+            return false;
+        }
     }
 #endif
 

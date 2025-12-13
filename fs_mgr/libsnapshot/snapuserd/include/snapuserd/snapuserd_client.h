@@ -72,7 +72,7 @@ class SnapuserdClient {
                            const std::string& backing_device,
                            const std::string& base_path_merge = "");
     bool AttachDmUser(const std::string& misc_name);
-
+    uint64_t CreateUserSnapshot(const std::string& misc_name, uint64_t num_sectors);
     // Wait for snapuserd to disassociate with a dm-user control device. This
     // must ONLY be called if the control device has already been deleted.
     bool WaitForDeviceDelete(const std::string& control_device);
@@ -80,6 +80,7 @@ class SnapuserdClient {
     // Detach snapuserd. This shuts down the listener socket, and will cause
     // snapuserd to gracefully exit once all handler threads have terminated.
     // This should only be used on first-stage instances of snapuserd.
+    std::optional<std::string> GetDeviceName(const std::string& misc_name);
     bool DetachSnapuserd();
 
     // Returns true if the snapuserd instance supports bridging a socket to second-stage init.
@@ -114,6 +115,8 @@ class SnapuserdClient {
 
     // Resume Merge threads
     bool ResumeMerge();
+    // Returns true if snapuserd instance supports UBLK snapshots
+    bool SupportsUblk();
 };
 
 }  // namespace snapshot

@@ -1,0 +1,7 @@
+# Userdata device aliasing file control service
+
+service userdata_alias_remove /system_ext/bin/userdata_alias_remove
+    user root
+    group system
+    disabled
+    oneshot

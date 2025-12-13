@@ -68,6 +68,7 @@
 #include <android-base/strings.h>
 #include <android-base/unique_fd.h>
 #include <android/avf_cc_flags.h>
+#include <com_android_apex_flags.h>
 #include <fs_avb/fs_avb.h>
 #include <fs_mgr.h>
 #include <fs_mgr_overlayfs.h>
@@ -484,6 +485,10 @@ void SelinuxRestoreContext() {
     selinux_android_restorecon("/dev/dm-user", SELINUX_ANDROID_RESTORECON_RECURSE);
     selinux_android_restorecon("/dev/device-mapper", 0);
 
+    if constexpr (com::android::apex::flags::mount_before_data()) {
+        selinux_android_restorecon("/dev/loop-control", 0);
+    }
+
     selinux_android_restorecon("/apex", 0);
     selinux_android_restorecon("/bootstrap-apex", 0);
     selinux_android_restorecon("/linkerconfig", 0);
@@ -576,7 +581,8 @@ void MountMissingSystemPartitions() {
         LOG(ERROR) << "Could not read /proc/mounts";
     }
 
-    static const std::vector<std::string> kPartitionNames = {"system_ext", "product"};
+    [[clang::no_destroy]] static const std::vector<std::string> kPartitionNames = {"system_ext",
+                                                                                   "product"};
 
     android::fs_mgr::Fstab extra_fstab;
     for (const auto& name : kPartitionNames) {
@@ -703,11 +709,12 @@ void LoadSelinuxPolicyAndroid() {
 
 #ifdef ALLOW_REMOUNT_OVERLAYS
 bool EarlySetupOverlays() {
-    if (android::fs_mgr::use_override_creds) return false;
-
     bool has_overlays = false;
     std::string contents;
-    auto result = android::base::ReadFileToString("/proc/mounts", &contents, true);
+    if (!android::base::ReadFileToString("/proc/mounts", &contents, true)) {
+        PLOG(ERROR) << "Failed to read /proc/mounts";
+        return false;
+    }
 
     auto lines = android::base::Split(contents, "\n");
     for (auto const& line : lines)

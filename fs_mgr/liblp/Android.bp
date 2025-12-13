@@ -88,13 +88,14 @@ cc_defaults {
             static_libs: [
                 "libfs_mgr",
             ],
-        }
+        },
     },
     stl: "libc++_static",
     srcs: [
         "builder_test.cpp",
         "super_layout_builder_test.cpp",
         "utility_test.cpp",
+        "writer_test.cpp",
         ":TestPartitionOpener_group",
     ],
 }
@@ -105,7 +106,7 @@ cc_test {
     test_suites: ["device-tests"],
     auto_gen_config: true,
     require_root: true,
-    host_supported: true
+    host_supported: true,
 }
 
 cc_test {
@@ -125,6 +126,21 @@ cc_test {
 }
 
 filegroup {
-   name: "TestPartitionOpener_group",
-   srcs: [ "test_partition_opener.cpp"],
+    name: "TestPartitionOpener_group",
+    srcs: ["test_partition_opener.cpp"],
+}
+
+cc_binary {
+    name: "lpmodify",
+    defaults: ["fs_mgr_defaults"],
+    host_supported: true,
+    srcs: ["lpmodify.cc"],
+    shared_libs: [
+        "liblp",
+        "libbase",
+    ],
+    cflags: [
+        "-D_FILE_OFFSET_BITS=64",
+        "-Werror",
+    ],
 }

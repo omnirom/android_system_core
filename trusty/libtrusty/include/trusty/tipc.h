@@ -24,6 +24,17 @@ extern "C" {
 #include <sys/uio.h>
 #include <trusty/ipc.h>
 
+/*
+ * The Trusty driver uses a 4096-byte shared buffer to transfer messages.
+ * However, the virtio/TIPC bridge overestimates the portion of the buffer
+ * available to it. Specifically, it does not account for the TIPC headers
+ * and the FDs being transferred. We reserve some of the buffer here to
+ * account for this. The reserved size is chosen to allow room for the
+ * TIPC header (16 bytes), 8x FD (24 bytes), plus some margin.
+ */
+#define TIPC_HDR_AND_FDS_MAX_SIZE 256
+#define VIRTIO_VSOCK_MSG_SIZE_LIMIT (4096 - TIPC_HDR_AND_FDS_MAX_SIZE)
+
 int tipc_connect(const char *dev_name, const char *srv_name);
 ssize_t tipc_send(int fd, const struct iovec* iov, int iovcnt, struct trusty_shm* shm, int shmcnt);
 int tipc_close(int fd);

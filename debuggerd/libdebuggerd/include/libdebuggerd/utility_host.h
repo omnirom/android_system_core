@@ -20,8 +20,9 @@
 
 #include <stddef.h>
 
-std::string describe_tagged_addr_ctrl(long ctrl);
+std::string describe_esr(uint64_t value);
 std::string describe_pac_enabled_keys(long keys);
+std::string describe_tagged_addr_ctrl(long ctrl);
 
 // Number of bytes per MTE granule.
 constexpr size_t kTagGranuleSize = 16;

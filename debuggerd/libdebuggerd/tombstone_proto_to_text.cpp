@@ -19,6 +19,7 @@
 
 #include <ctype.h>
 #include <inttypes.h>
+#include <signal.h>
 
 #include <algorithm>
 #include <functional>
@@ -103,6 +104,11 @@ static uint64_t untag_address(Architecture arch, uint64_t addr) {
 static void print_thread_header(CallbackType callback, const Tombstone& tombstone,
                                 const Thread& thread, bool should_log) {
   const char* process_name = "<unknown>";
+  if (!tombstone.executable_name().empty()) {
+    CB(should_log, "Executable: %s", tombstone.executable_name().c_str());
+  } else {
+    CB(should_log, "Executable: <unknown>");
+  }
   if (!tombstone.command_line().empty()) {
     process_name = tombstone.command_line()[0].c_str();
     CB(should_log, "Cmdline: %s", android::base::Join(tombstone.command_line(), " ").c_str());
@@ -119,6 +125,16 @@ static void print_thread_header(CallbackType callback, const Tombstone& tombston
   if (thread.pac_enabled_keys() != -1) {
     CB(should_log, "pac_enabled_keys: %016" PRIx64 "%s", thread.pac_enabled_keys(),
        describe_pac_enabled_keys(thread.pac_enabled_keys()).c_str());
+  }
+
+  if (tombstone.arch() == Architecture::ARM64) {
+    // See if the esr register exists.
+    for (const auto& reg : thread.registers()) {
+      if (reg.name() == "esr" && reg.u64() != 0U) {
+        CB(should_log, "esr: %016" PRIx64 " %s", reg.u64(), describe_esr(reg.u64()).c_str());
+        break;
+      }
+    }
   }
 }
 
@@ -143,11 +159,11 @@ static void print_thread_registers(CallbackType callback, const Tombstone& tombs
 
   switch (tombstone.arch()) {
     case Architecture::ARM32:
-      special_registers = {"ip", "lr", "sp", "pc", "pst"};
+      special_registers = {"ip", "lr", "sp", "pc", "pst", "error_code"};
       break;
 
     case Architecture::ARM64:
-      special_registers = {"ip", "lr", "sp", "pc", "pst"};
+      special_registers = {"ip", "lr", "sp", "pc", "pst", "esr"};
       break;
 
     case Architecture::RISCV64:
@@ -155,11 +171,11 @@ static void print_thread_registers(CallbackType callback, const Tombstone& tombs
       break;
 
     case Architecture::X86:
-      special_registers = {"ebp", "esp", "eip"};
+      special_registers = {"ebp", "esp", "eip", "err"};
       break;
 
     case Architecture::X86_64:
-      special_registers = {"rbp", "rsp", "rip"};
+      special_registers = {"rbp", "rsp", "rip", "err"};
       break;
 
     default:
@@ -169,7 +185,7 @@ static void print_thread_registers(CallbackType callback, const Tombstone& tombs
 
   for (const auto& reg : thread.registers()) {
     auto row = &current_row;
-    if (special_registers.count(reg.name()) == 1) {
+    if (special_registers.contains(reg.name())) {
       row = &special_row;
     }
 
@@ -184,7 +200,16 @@ static void print_thread_registers(CallbackType callback, const Tombstone& tombs
     print_register_row(callback, word_size, current_row, should_log);
   }
 
-  print_register_row(callback, word_size, special_row, should_log);
+  if (special_row.size() > column_count) {
+    std::vector<std::pair<std::string, uint64_t>> first_row(special_row.begin(),
+                                                            special_row.begin() + column_count);
+    std::vector<std::pair<std::string, uint64_t>> second_row(special_row.begin() + column_count,
+                                                             special_row.end());
+    print_register_row(callback, word_size, first_row, should_log);
+    print_register_row(callback, word_size, second_row, should_log);
+  } else {
+    print_register_row(callback, word_size, special_row, should_log);
+  }
 }
 
 static void print_backtrace(CallbackType callback, SymbolizeCallbackType symbolize,
@@ -420,6 +445,33 @@ static void print_memory_maps(CallbackType callback, const Tombstone& tombstone)
   }
 }
 
+static std::string get_crash_type(const Thread& thread, const std::string& reg_name,
+                                  const uint64_t write_mask) {
+  for (const auto& reg : thread.registers()) {
+    if (reg.name() == reg_name) {
+      if (reg.u64() & write_mask) {
+        return " (write)";
+      }
+      return " (read)";
+    }
+  }
+  return "";
+}
+
+static std::string get_read_write_desc(const Architecture& arch, const Thread& thread) {
+  switch (arch) {
+    case Architecture::ARM32:
+      return get_crash_type(thread, "error_code", (1U << 11));
+    case Architecture::ARM64:
+      return get_crash_type(thread, "esr", (1U << 6));
+    case Architecture::X86:
+    case Architecture::X86_64:
+      return get_crash_type(thread, "err", (1U << 1));
+    default:
+      return "";
+  }
+}
+
 static void print_main_thread(CallbackType callback, SymbolizeCallbackType symbolize,
                               const Tombstone& tombstone, const Thread& thread) {
   print_thread_header(callback, tombstone, thread, true);
@@ -441,6 +493,7 @@ static void print_main_thread(CallbackType callback, SymbolizeCallbackType symbo
     if (signal_info.has_fault_address()) {
       fault_addr_desc =
           StringPrintf("0x%0*" PRIx64, 2 * pointer_width(tombstone), signal_info.fault_address());
+      fault_addr_desc += get_read_write_desc(tombstone.arch(), thread);
     } else {
       fault_addr_desc = "--------";
     }
@@ -448,11 +501,9 @@ static void print_main_thread(CallbackType callback, SymbolizeCallbackType symbo
     CBL("signal %d (%s), code %d (%s%s), fault addr %s", signal_info.number(),
         signal_info.name().c_str(), signal_info.code(), signal_info.code_name().c_str(),
         sender_desc.c_str(), fault_addr_desc.c_str());
-#ifdef SEGV_MTEAERR
     is_async_mte_crash = signal_info.number() == SIGSEGV && signal_info.code() == SEGV_MTEAERR;
     is_mte_crash = is_async_mte_crash ||
                    (signal_info.number() == SIGSEGV && signal_info.code() == SEGV_MTESERR);
-#endif
   }
 
   if (tombstone.causes_size() == 1) {
@@ -582,6 +633,9 @@ bool tombstone_proto_to_text(const Tombstone& tombstone, CallbackType callback,
                              SymbolizeCallbackType symbolize) {
   CBL("*** *** *** *** *** *** *** *** *** *** *** *** *** *** *** ***");
   CBL("Build fingerprint: '%s'", tombstone.build_fingerprint().c_str());
+  if (!tombstone.kernel_release().empty()) {
+    CBL("Kernel Release: '%s'", tombstone.kernel_release().c_str());
+  }
   CBL("Revision: '%s'", tombstone.revision().c_str());
   CBL("ABI: '%s'", abi_string(tombstone.arch()));
   if (tombstone.guest_arch() != Architecture::NONE) {

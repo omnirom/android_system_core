@@ -45,6 +45,13 @@
 
 #include "utility.h"
 
+// Provide == for fiemap_extent in global scope for test assertions. There are other fields like
+// reserved or flags. For testing purpose, we ignore others and just compare the actual extents
+// (offset/length).
+static bool operator==(const struct fiemap_extent& a, const struct fiemap_extent& b) {
+    return a.fe_physical == b.fe_physical && a.fe_length == b.fe_length;
+}
+
 namespace android {
 namespace fiemap {
 
@@ -336,6 +343,35 @@ TEST_F(SplitFiemapTest, CorruptSplit) {
     fd = {};
 
     ASSERT_TRUE(SplitFiemap::RemoveSplitFiles(testfile));
+}
+
+TEST_F(SplitFiemapTest, Grow) {
+    uint64_t file_size = 768_KiB;
+    uint64_t max_piece_size = 32_KiB;
+    auto ptr = SplitFiemap::Create(testfile, file_size, max_piece_size);
+    ASSERT_NE(ptr, nullptr);
+
+    auto extents_before_grow = ptr->extents();
+
+    uint64_t grow_size = 768_KiB;
+    ASSERT_TRUE(ptr->Grow(grow_size, max_piece_size));
+
+    auto extents_after_grow = ptr->extents();
+    ASSERT_GT(extents_after_grow.size(), extents_before_grow.size());
+    ASSERT_GE(ptr->size(), file_size + grow_size);
+
+    ptr = nullptr;
+
+    std::vector<std::string> files;
+    ASSERT_TRUE(SplitFiemap::GetSplitFileList(testfile, &files));
+    for (const auto& path : files) {
+        EXPECT_EQ(access(path.c_str(), F_OK), 0);
+    }
+    ASSERT_GE(extents_after_grow.size(), files.size());
+
+    ptr = SplitFiemap::Open(testfile);
+    ASSERT_NE(ptr, nullptr);
+    ASSERT_EQ(ptr->extents(), extents_after_grow);
 }
 
 static string ReadSplitFiles(const std::string& base_path, size_t num_files) {

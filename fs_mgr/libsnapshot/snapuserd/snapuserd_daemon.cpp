@@ -18,10 +18,9 @@
 #include <android-base/properties.h>
 #include <android-base/strings.h>
 #include <gflags/gflags.h>
+#include <libsnapshot/capabilities.h>
 #include <snapuserd/snapuserd_client.h>
-
 #include <storage_literals/storage_literals.h>
-#include "user-space-merge/snapuserd_core.h"
 
 #include "snapuserd_daemon.h"
 
@@ -37,10 +36,11 @@ DEFINE_bool(io_uring, false, "If true, io_uring feature is enabled");
 DEFINE_bool(o_direct, false, "If true, enable direct reads on source device");
 DEFINE_bool(skip_verification, false, "If true, skip verification of partitions");
 DEFINE_int32(cow_op_merge_size, 0, "number of operations to be processed at once");
-DEFINE_int32(worker_count, android::snapshot::kNumWorkerThreads,
-             "number of worker threads used to serve I/O requests to dm-user");
+DEFINE_int32(worker_count, 4, "number of worker threads used to serve I/O requests to dm-user");
 DEFINE_int32(verify_block_size, 1_MiB, "block sized used during verification of snapshots");
 DEFINE_int32(num_verify_threads, 3, "number of threads used during verification phase");
+DEFINE_bool(ublk, false, "If true, use ublk instead of dm-user");
+DEFINE_int32(fd_num, -1, "fd used to communicate with Init for udev events");
 
 namespace android {
 namespace snapshot {
@@ -88,7 +88,51 @@ bool Daemon::StartDaemon(int argc, char** argv) {
     return false;
 }
 
+bool Daemon::SendUeventRequest(int socket, const std::string& device_path) {
+    ssize_t ret =
+            TEMP_FAILURE_RETRY(send(socket, device_path.c_str(), device_path.size(), MSG_NOSIGNAL));
+
+    if (ret < 0) {
+        PLOG(ERROR) << "Failed to send uevent request for: " << device_path;
+        return false;
+    }
+    // check and treat partial send as an error
+    if (static_cast<size_t>(ret) != device_path.size()) {
+        LOG(ERROR) << "Partial send for uevent request for: " << device_path << ". Sent " << ret
+                   << " of " << device_path.size() << " bytes.";
+        return false;
+    }
+
+    LOG(INFO) << "Sent uevent request for: " << device_path;
+    return true;
+}
+
+bool Daemon::SendDoneNotification(int socket_fd) {
+    const char* done_message = "DONE";
+    const size_t message_length = strlen(done_message) + 1;
+
+    ssize_t bytes_sent =
+            TEMP_FAILURE_RETRY(send(socket_fd, done_message, message_length, MSG_NOSIGNAL));
+
+    if (bytes_sent < 0) {
+        PLOG(ERROR) << "Failed to send '" << done_message << "' message to init via socketpair fd "
+                    << socket_fd;
+        return false;
+    }
+    if (static_cast<size_t>(bytes_sent) != message_length) {
+        LOG(ERROR) << "Partial send for '" << done_message << "' message to init: sent "
+                   << bytes_sent << " of " << message_length << " bytes on fd " << socket_fd;
+        return false;
+    }
+
+    LOG(INFO) << "Successfully sent '" << done_message << "' message to init via socketpair fd "
+              << socket_fd;
+    return true;
+}
+
 bool Daemon::StartServerForUserspaceSnapshots(int arg_start, int argc, char** argv) {
+    int socket_ = -1;
+
     sigfillset(&signal_mask_);
     sigdelset(&signal_mask_, SIGINT);
     sigdelset(&signal_mask_, SIGTERM);
@@ -103,6 +147,27 @@ bool Daemon::StartServerForUserspaceSnapshots(int arg_start, int argc, char** ar
 
     MaskAllSignalsExceptIntAndTerm();
 
+    gflags::CommandLineFlagInfo ublk_flag_info;
+    bool ublk_flag_is_default = true;
+    if (gflags::GetCommandLineFlagInfo("ublk", &ublk_flag_info)) {
+        ublk_flag_is_default = ublk_flag_info.is_default;
+    }
+
+    if (ublk_flag_is_default) {
+        // If -ublk or -noublk was not explicitly passed on the command-line,
+        // fall back to auto-detection. Otherwise, the flag passed by the
+        // caller (libsnapshot) is respected.
+        // Check if test wants to force dm_user mode.
+        if (android::base::GetProperty("snapuserd.test.force_dm_user", "") == "true") {
+            FLAGS_ublk = false;
+        } else {
+            // Otherwise, perform normal auto-detection.
+            FLAGS_ublk = IsUblkEnabled();
+        }
+    }
+    // Set block_server_opener_
+    user_server_.Initialize(FLAGS_ublk);
+
     user_server_.SetServerRunning();
 
     if (FLAGS_socket_handoff) {
@@ -114,10 +179,23 @@ bool Daemon::StartServerForUserspaceSnapshots(int arg_start, int argc, char** ar
         }
         return user_server_.Run();
     }
+
+    UeventHelperCallback uevent_helper = [&](const std::string& device_path) {
+        if (socket_ == -1) {
+            LOG(INFO) << "socket_ not initialized, dropping req for device:" << device_path;
+            return false;
+        }
+        return SendUeventRequest(socket_, device_path);
+    };
+    if (FLAGS_fd_num != -1) {
+        LOG(INFO) << "using fd from socketpair() " << FLAGS_fd_num;
+        socket_ = FLAGS_fd_num;
+        user_server_.SetUeventHelper(uevent_helper);
+    }
     for (int i = arg_start; i < argc; i++) {
         auto parts = android::base::Split(argv[i], ",");
         if (parts.size() != 4) {
-            LOG(ERROR) << "Malformed message, expected at least four sub-arguments.";
+            LOG(ERROR) << "Malformed message, expected four sub-arguments.";
             return false;
         }
         HandlerOptions options = {
@@ -134,6 +212,12 @@ bool Daemon::StartServerForUserspaceSnapshots(int arg_start, int argc, char** ar
             return false;
         }
     }
+    if (FLAGS_ublk && FLAGS_fd_num != -1) {
+        SendDoneNotification(socket_);
+        close(socket_);
+        socket_ = -1;
+    }
+    LOG(INFO) << "DONE Starting daemon, notifying init";
 
     // We reach this point only during selinux transition during device boot.
     // At this point, all threads are spin up and are ready to serve the I/O

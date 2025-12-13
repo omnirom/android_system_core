@@ -26,6 +26,7 @@
 #include <libfiemap/image_manager.h>
 #include <liblp/mock_property_fetcher.h>
 #include <liblp/partition_opener.h>
+#include <libsnapshot/capabilities.h>
 #include <libsnapshot/snapshot.h>
 #include <storage_literals/storage_literals.h>
 #include <update_engine/update_metadata.pb.h>
@@ -82,7 +83,7 @@ class TestDeviceInfo : public SnapshotManager::IDeviceInfo {
     std::string GetMetadataDir() const override { return metadata_dir_; }
     std::string GetSlotSuffix() const override { return slot_suffix_; }
     std::string GetOtherSlotSuffix() const override { return slot_suffix_ == "_a" ? "_b" : "_a"; }
-    std::string GetSuperDevice([[maybe_unused]] uint32_t slot) const override { return "super"; }
+    std::string GetSuperDevice() const override { return "super"; }
     const android::fs_mgr::IPartitionOpener& GetPartitionOpener() const override {
         return *opener_.get();
     }
@@ -185,6 +186,7 @@ class SnapshotTestPropertyFetcher : public android::fs_mgr::IPropertyFetcher {
 
     std::string GetProperty(const std::string& key, const std::string& defaultValue) override;
     bool GetBoolProperty(const std::string& key, bool defaultValue) override;
+    void SetProperty(const std::string& key, const std::string& value);
 
     static void SetUp(const std::string& slot_suffix = "_a") { Reset(slot_suffix); }
     static void TearDown() { Reset("_a"); }
@@ -192,7 +194,7 @@ class SnapshotTestPropertyFetcher : public android::fs_mgr::IPropertyFetcher {
   private:
     static void Reset(const std::string& slot_suffix) {
         IPropertyFetcher::OverrideForTesting(
-                std::make_unique<SnapshotTestPropertyFetcher>(slot_suffix));
+                std::make_shared<SnapshotTestPropertyFetcher>(slot_suffix));
     }
 
   private:

@@ -17,12 +17,15 @@
 
 #include <gmock/gmock.h>
 #include "fastboot_driver_interface.h"
+#include "transport.h"
 
 namespace fastboot {
 
 class MockFastbootDriver : public IFastBootDriver {
   public:
     MOCK_METHOD(RetCode, FlashPartition, (const std::string&, android::base::borrowed_fd, uint32_t),
+                (override));
+    MOCK_METHOD(RetCode, FlashPartition, (const std::string&, const std::vector<char>&),
                 (override));
     MOCK_METHOD(RetCode, DeletePartition, (const std::string&), (override));
     MOCK_METHOD(RetCode, Reboot, (std::string*, std::vector<std::string>*), (override));
@@ -38,14 +41,42 @@ class MockFastbootDriver : public IFastBootDriver {
                 (const std::string&, android::base::borrowed_fd, size_t, std::string*,
                  std::vector<std::string>*),
                 (override));
+    MOCK_METHOD(RetCode, Download,
+                (android::base::borrowed_fd, size_t, std::string*, std::vector<std::string>*),
+                (override));
+    MOCK_METHOD(RetCode, Download,
+                (const std::string&, const std::vector<char>&, std::string*,
+                 std::vector<std::string>*),
+                (override));
+    MOCK_METHOD(RetCode, Download,
+                (const std::vector<char>&, std::string*, std::vector<std::string>*), (override));
+    MOCK_METHOD(RetCode, Download,
+                (const std::string&, sparse_file*, uint32_t, size_t, size_t, bool, std::string*,
+                 std::vector<std::string>*),
+                (override));
     MOCK_METHOD(RetCode, RawCommand,
                 (const std::string&, const std::string&, std::string*, std::vector<std::string>*,
                  int*),
                 (override));
+    MOCK_METHOD(RetCode, RawCommand,
+                (const std::string&, std::string*, std::vector<std::string>*, int*), (override));
     MOCK_METHOD(RetCode, ResizePartition, (const std::string&, const std::string&), (override));
     MOCK_METHOD(RetCode, Erase, (const std::string&, std::string*, std::vector<std::string>*),
                 (override));
     MOCK_METHOD(RetCode, WaitForDisconnect, (), (override));
+    MOCK_METHOD(RetCode, Flash, (const std::string&, std::string*, std::vector<std::string>*),
+                (override));
+    MOCK_METHOD(std::string, Error, (), (override));
+    MOCK_METHOD(RetCode, SetActive, (const std::string&, std::string*, std::vector<std::string>*),
+                (override));
+    MOCK_METHOD(void, set_transport, (std::unique_ptr<Transport>), (override));
+    MOCK_METHOD(RetCode, SnapshotUpdateCommand,
+                (const std::string&, std::string*, std::vector<std::string>*), (override));
+    MOCK_METHOD(RetCode, Boot, (std::string*, std::vector<std::string>*), (override));
+    MOCK_METHOD(RetCode, Continue, (std::string*, std::vector<std::string>*), (override));
+    MOCK_METHOD(RetCode, CreatePartition, (const std::string&, const std::string&), (override));
+    MOCK_METHOD(RetCode, Upload, (const std::string&, std::string*, std::vector<std::string>*),
+                (override));
 };
 
 }  // namespace fastboot

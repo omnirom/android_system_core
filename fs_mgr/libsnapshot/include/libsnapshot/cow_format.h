@@ -281,7 +281,7 @@ static_assert(sizeof(CowOperationV2) == sizeof(CowFooterOperation));
 enum CowCompressionAlgorithm : uint8_t {
     kCowCompressNone = 0,
     kCowCompressGz = 1,
-    kCowCompressBrotli = 2,
+    kCowCompressBrotliUnsupported = 2,
     kCowCompressLz4 = 3,
     kCowCompressZstd = 4,
 };

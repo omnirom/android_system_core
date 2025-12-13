@@ -51,6 +51,7 @@ rust_bindgen {
     apex_available: [
         "//apex_available:platform",
         "com.android.resolv",
+        "com.android.uprobestats",
         "com.android.virt",
     ],
 }

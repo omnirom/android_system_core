@@ -55,9 +55,9 @@ namespace android {
 namespace init {
 namespace {
 
-std::string shutdown_command;
+[[clang::no_destroy]] std::string shutdown_command;
 static bool subcontext_terminated_by_shutdown;
-static std::unique_ptr<Subcontext> subcontext;
+[[clang::no_destroy]] static std::unique_ptr<Subcontext> subcontext;
 
 class SubcontextProcess {
   public:

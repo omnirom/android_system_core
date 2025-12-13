@@ -52,7 +52,8 @@ Linux, macOS, or Windows.
    e. DATA -> the requested command is ready for the data phase.
       A DATA response packet will be 12 bytes long, in the form of
       DATA00000000 where the 8 digit hexadecimal number represents
-      the total data size to transfer.
+      the total data size to transfer. The DATA response itself does not
+      contain any actual data; the data transfer begins with the next packet.
 
 3. Data phase.  Depending on the command, the host or client will
    send the indicated amount of data.  Short packets are always

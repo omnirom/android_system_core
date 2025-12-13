@@ -285,8 +285,7 @@ where
     let found = u16::deserialize(deserializer)?;
     if expected != found {
         return Err(serde::de::Error::custom(format!(
-            "Failed to parse {} version. Expected: {} Found: {}",
-            version_type, expected, found
+            "Failed to parse {version_type} version. Expected: {expected} Found: {found}"
         )));
     }
     Ok(found)
@@ -313,8 +312,7 @@ where
     let found: [u8; 16] = <[u8; 16]>::deserialize(deserializer)?;
     if found != MAGIC_UUID {
         return Err(serde::de::Error::custom(format!(
-            "Failed to parse magic number. Expected: {:?} Found: {:?}",
-            MAGIC_UUID, found
+            "Failed to parse magic number. Expected: {MAGIC_UUID:?} Found: {found:?}"
         )));
     }
     Ok(found)
@@ -527,13 +525,13 @@ impl<'de> Deserialize<'de> for RecordsFile {
         let rf = Self::deserialize(deserializer)?;
 
         rf.check().map_err(|e| {
-            serde::de::Error::custom(format!("failed to validate records file: {}", e))
+            serde::de::Error::custom(format!("failed to validate records file: {e}"))
         })?;
 
         let mut zero_digest = rf.clone();
         zero_digest.header.digest = 0;
         let digest =
-            zero_digest.compute_digest().map_err(|e| serde::de::Error::custom(format!("{}", e)))?;
+            zero_digest.compute_digest().map_err(|e| serde::de::Error::custom(format!("{e}")))?;
 
         if digest != rf.header.digest {
             return Err(serde::de::Error::custom(format!(
@@ -553,7 +551,7 @@ impl Serialize for RecordsFile {
         S: Serializer,
     {
         self.check().map(|_| self).map_err(|e| {
-            serde::ser::Error::custom(format!("failed to validate records file: {}", e))
+            serde::ser::Error::custom(format!("failed to validate records file: {e}"))
         })?;
         Self::serialize(self, serializer)
     }

@@ -285,7 +285,7 @@ uint32_t CowReader::GetMaxCompressionSize() {
 //                        Replace-op-4, Zero-op-9, Replace-op-5 }
 //==============================================================
 bool CowReader::PrepMergeOps() {
-    std::vector<int> other_ops;
+    std::vector<uint32_t> other_ops;
     std::vector<uint32_t> merge_op_blocks;
     std::unordered_map<uint32_t, int> block_map;
 
@@ -322,7 +322,7 @@ bool CowReader::PrepMergeOps() {
     if (reader_flag_ == ReaderFlags::USERSPACE_MERGE) {
         std::sort(other_ops.begin(), other_ops.end());
     } else {
-        std::sort(other_ops.begin(), other_ops.end(), std::greater<int>());
+        std::sort(other_ops.begin(), other_ops.end(), std::greater<uint32_t>());
     }
 
     merge_op_blocks.insert(merge_op_blocks.end(), other_ops.begin(), other_ops.end());
@@ -356,7 +356,7 @@ bool CowReader::PrepMergeOps() {
 }
 
 bool CowReader::GetSequenceDataV2(std::vector<uint32_t>* merge_op_blocks,
-                                  std::vector<int>* other_ops,
+                                  std::vector<uint32_t>* other_ops,
                                   std::unordered_map<uint32_t, int>* block_map) {
     auto seq_ops_set = std::unordered_set<uint32_t>();
     size_t num_seqs = 0;
@@ -394,7 +394,8 @@ bool CowReader::GetSequenceDataV2(std::vector<uint32_t>* merge_op_blocks,
     return false;
 }
 
-bool CowReader::GetSequenceData(std::vector<uint32_t>* merge_op_blocks, std::vector<int>* other_ops,
+bool CowReader::GetSequenceData(std::vector<uint32_t>* merge_op_blocks,
+                                std::vector<uint32_t>* other_ops,
                                 std::unordered_map<uint32_t, int>* block_map) {
     std::unordered_set<uint32_t> seq_ops_set;
     // read sequence ops data
@@ -468,7 +469,7 @@ bool CowReader::VerifyMergeOps() {
         if (overwritten_blocks.count(block)) {
             overwrite = overwritten_blocks[block];
             LOG(ERROR) << "Invalid Sequence! Block needed for op:\n"
-                       << op << "\noverwritten by previously merged op:\n"
+                       << *op << "\noverwritten by previously merged op:\n"
                        << *overwrite;
         }
         if (misaligned && overwritten_blocks.count(block + 1)) {
@@ -674,11 +675,7 @@ bool CowReader::GetRawBytes(uint64_t offset, void* buffer, size_t len, size_t* r
         LOG(ERROR) << "invalid data offset: " << offset << ", " << len << " bytes";
         return false;
     }
-    if (lseek(fd_.get(), offset, SEEK_SET) < 0) {
-        PLOG(ERROR) << "lseek to read raw bytes failed";
-        return false;
-    }
-    ssize_t rv = TEMP_FAILURE_RETRY(::read(fd_.get(), buffer, len));
+    ssize_t rv = TEMP_FAILURE_RETRY(::pread(fd_.get(), buffer, len, offset));
     if (rv < 0) {
         PLOG(ERROR) << "read failed";
         return false;
@@ -734,9 +731,6 @@ ssize_t CowReader::ReadData(const CowOperation* op, void* buffer, size_t buffer_
             break;
         case kCowCompressGz:
             decompressor = IDecompressor::Gz();
-            break;
-        case kCowCompressBrotli:
-            decompressor = IDecompressor::Brotli();
             break;
         case kCowCompressZstd:
             if (op_buf_size != op->data_length) {

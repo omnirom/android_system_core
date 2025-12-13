@@ -30,9 +30,18 @@ log_file="$HOST_PATH/snapshot.log"
 
 # Function to log messages to both console and log file
 log_message() {
-    message="$1"
-    echo "$message"  # Print to stdout
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $message" >> "$log_file"  # Append to log file with timestamp
+  message="$1"
+  echo "$message"                                               # Print to stdout
+  echo "$(date '+%Y-%m-%d %H:%M:%S') - $message" >> "$log_file" # Append to log file with timestamp
+}
+
+# Wrap fastboot to pick up the preferred serial from environment. adb already honors $ANDROID_SERIAL.
+fastboot() {
+  if [ -z "$FASTBOOT_SERIAL" ]; then
+    command fastboot "$@"
+  else
+    command fastboot -s "$FASTBOOT_SERIAL" "$@"
+  fi
 }
 
 # Function to check for create_snapshot and build if needed
@@ -65,8 +74,8 @@ flash_static_partitions() {
   fastboot flashall --exclude-dynamic-partitions --disable-super-optimization --skip-reboot
 
   if (( wipe_flag )); then
-      log_message "Wiping device..."
-      fastboot -w
+    log_message "Wiping device..."
+    fastboot -w
   fi
   fastboot reboot
 }
@@ -127,6 +136,7 @@ EOF
 skip_static_partitions=0
 boot_snapshot=0
 flash_bootloader=1
+userspace_fastboot=0
 wipe_flag=0
 help_flag=0
 
@@ -145,6 +155,9 @@ for arg in "$@"; do
     --boot_snapshot)
       boot_snapshot=1
       ;;
+    --userspace_fastboot)
+      userspace_fastboot=1
+      ;;
     --help)
       help_flag=1
       ;;
@@ -156,15 +169,20 @@ for arg in "$@"; do
 done
 
 # Check if help flag is set
-if (( help_flag )); then
+if ((help_flag)); then
   show_help
   exit 0
 fi
 
+if (( flash_bootloader && userspace_fastboot )); then
+  echo "Bootloader cannot be flashed with userspace fastboot"
+  exit 1
+fi
+
 rm -rf $HOST_PATH
 
-adb root
 adb wait-for-device
+adb root
 
 adb shell rm -rf $DEVICE_PATH
 adb shell mkdir -p $DEVICE_PATH
@@ -214,22 +232,26 @@ adb push -q $HOST_PATH/*.patch $DEVICE_PATH
 
 log_message "Applying update"
 
-if (( boot_snapshot)); then
+if ((boot_snapshot)); then
   adb shell snapshotctl map-snapshots $DEVICE_PATH
-elif (( wipe_flag )); then
+elif ((wipe_flag)); then
   adb shell snapshotctl apply-update $DEVICE_PATH -w
 else
   adb shell snapshotctl apply-update $DEVICE_PATH
 fi
 
 if (( skip_static_partitions )); then
-    log_message "Rebooting device - Skipping flashing static partitions"
-    adb reboot
+  log_message "Rebooting device - Skipping flashing static partitions"
+  adb reboot
 else
-    log_message "Rebooting device to bootloader"
+  log_message "Rebooting device to bootloader"
+  if (( userspace_fastboot )); then
+    adb reboot fastboot
+  else
     adb reboot bootloader
-    log_message "Waiting to enter fastboot bootloader"
-    flash_static_partitions "$wipe_flag" "$flash_bootloader"
+  fi
+  log_message "Waiting to enter fastboot bootloader"
+  flash_static_partitions "$wipe_flag" "$flash_bootloader"
 fi
 
 log_message "Update completed"

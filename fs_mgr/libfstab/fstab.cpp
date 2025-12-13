@@ -170,7 +170,21 @@ void ParseUserDevices(const std::string& arg, FstabEntry* entry) {
         entry->fs_mgr_flags.is_zoned = true;
     }
     entry->user_devices.push_back(param[1]);
-    entry->device_aliased.push_back(param[0] == "exp_alias" ? 1 : 0);
+
+    if (param[0] == "exp_alias") {
+        std::string_view exp_alias_prefix = "userdata_exp.";
+        std::string deviceName = android::base::Basename(param[1]);
+        if (!android::base::StartsWith(deviceName, exp_alias_prefix)) {
+            LERROR << "Device aliasing file " << deviceName << " doesn't start with "
+                   << exp_alias_prefix;
+            entry->user_devices.pop_back();
+            return;
+        }
+
+        entry->device_aliased.push_back(1);
+    } else {
+        entry->device_aliased.push_back(0);
+    }
 }
 
 bool ParseFsMgrFlags(const std::string& flags, FstabEntry* entry) {
@@ -647,6 +661,9 @@ void TransformFstabForDsu(Fstab* fstab, const std::string& dsu_slot,
                 entry->blk_device = android::gsi::kDsuUserdata;
                 entry->fs_mgr_flags.logical = true;
                 entry->fs_mgr_flags.formattable = true;
+                entry->fs_mgr_flags.is_zoned = false;
+                entry->user_devices.clear();
+                entry->device_aliased.clear();
                 if (!entry->metadata_key_dir.empty()) {
                     entry->metadata_key_dir = android::gsi::GetDsuMetadataKeyDir(dsu_slot);
                 }

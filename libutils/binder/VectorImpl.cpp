@@ -94,7 +94,7 @@ void* VectorImpl::editArrayImpl()
             // Fail instead of returning a pointer to storage that's not
             // editable. Otherwise we'd be editing the contents of a buffer
             // for which we're not the only owner, which is undefined behaviour.
-            LOG_ALWAYS_FATAL_IF(editable == nullptr);
+            LOG_ALWAYS_FATAL_IF(editable == nullptr, "size: %zu", sb->size());
             _do_copy(editable->data(), mStorage, mCount);
             release_storage();
             mStorage = editable->data();

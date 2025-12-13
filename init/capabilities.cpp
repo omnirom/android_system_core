@@ -27,7 +27,7 @@
 namespace android {
 namespace init {
 
-static const std::map<std::string, int> cap_map = {
+[[clang::no_destroy]] static const std::map<std::string, int> cap_map = {
         CAP_MAP_ENTRY(CHOWN),
         CAP_MAP_ENTRY(DAC_OVERRIDE),
         CAP_MAP_ENTRY(DAC_READ_SEARCH),

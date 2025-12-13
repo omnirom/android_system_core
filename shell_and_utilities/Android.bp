@@ -22,7 +22,6 @@ phony {
         "fsck.exfat",
         "ldd",
         "logwrapper",
-        "mini-keyctl",
         "mkfs.exfat",
         "mkshrc",
         "newfs_msdos",

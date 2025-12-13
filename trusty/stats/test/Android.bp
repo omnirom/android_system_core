@@ -44,4 +44,7 @@ cc_test {
     ],
     require_root: true,
     proprietary: true,
+    test_suites: [
+        "device-pixel-tests",
+    ],
 }

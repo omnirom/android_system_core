@@ -334,6 +334,23 @@ service $name /system/bin/yes
     android::fs_mgr::Fstab root_mounts;
     ASSERT_TRUE(ReadFstabFromFile("/proc/mounts", &root_mounts));
 
+    // Trigger kernel to automount /sys/kernel/debug/tracing.
+    //
+    // It gets mounted on demand on first access to its contents, rather than
+    // being managed by init. init does not remount it after switching the
+    // network namespace, and doesn't even have the SELinux policies set up to
+    // be able to.
+    //
+    // If /sys/kernel/debug/tracing is mounted in the root namespace, accessing
+    // its contents will trigger the automount. If it was not, touch command
+    // will fail - which is also fine.
+    //
+    // See also https://lore.kernel.org/lkml/20150204143755.694479564@goodmis.org/
+    system(StringReplace("nsenter -m -t $pid /system/bin/touch "
+                         "/sys/kernel/debug/tracing/trace_marker 2>/dev/null",
+                         "$pid", std::to_string(service->pid()), false)
+                   .c_str());
+
     android::fs_mgr::Fstab ns_mounts;
     ASSERT_TRUE(ReadFstabFromFile(StringReplace("/proc/$pid/mounts", "$pid",
                                                 std::to_string(service->pid()), /*all=*/false),

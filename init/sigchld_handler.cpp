@@ -29,6 +29,7 @@
 #include <android-base/logging.h>
 #include <android-base/scopeguard.h>
 #include <android-base/stringprintf.h>
+#include <procinfo/process.h>
 
 #include <thread>
 
@@ -36,6 +37,7 @@
 #include "init.h"
 #include "service.h"
 #include "service_list.h"
+#include "util.h"
 
 using android::base::boot_clock;
 using android::base::make_scope_guard;
@@ -94,14 +96,24 @@ static pid_t ReapOneProcess() {
                                            exec_duration_ms / 1000.0f);
             }
         } else {
-            name = StringPrintf("Untracked pid %d", pid);
+            android::procinfo::ProcessInfo info;
+            std::string error;
+            std::string debug;
+            if (android::procinfo::GetProcessInfo(pid, &info, &error)) {
+                debug = std::format("pid: {} name: ({}) ppid: {} pgrp: {} state: {}", info.pid,
+                                    info.name, info.ppid, info.pgrp, static_cast<char>(info.state));
+            } else {
+                LOG(ERROR) << error;
+                debug = std::to_string(pid);
+            }
+            name = std::format("Untracked process ({})", debug);
         }
     }
 
     if (siginfo.si_code == CLD_EXITED) {
         LOG(INFO) << name << " exited with status " << siginfo.si_status << wait_string;
     } else {
-        LOG(INFO) << name << " received signal " << siginfo.si_status << wait_string;
+        LOG(INFO) << name << " received " << SignalName(siginfo.si_status) << wait_string;
     }
 
     if (!service) {

@@ -155,7 +155,7 @@ void sizedBuffer2AidlHWToken(SizedBuffer& buffer,
 
     if (error != ERROR_NONE) {
         return ndk::ScopedAStatus(AStatus_fromServiceSpecificError(ERROR_GENERAL_FAILURE));
-    } else if (response.error == ERROR_NOT_IMPLEMENTED) {
+    } else if (response.error == ::gatekeeper::ERROR_NOT_IMPLEMENTED) {
         return ndk::ScopedAStatus(AStatus_fromServiceSpecificError(ERROR_NOT_IMPLEMENTED));
     } else if (response.error != ERROR_NONE) {
         return ndk::ScopedAStatus(AStatus_fromServiceSpecificError(ERROR_GENERAL_FAILURE));
@@ -175,7 +175,7 @@ void sizedBuffer2AidlHWToken(SizedBuffer& buffer,
 
     if (error != ERROR_NONE) {
         return ndk::ScopedAStatus(AStatus_fromServiceSpecificError(ERROR_GENERAL_FAILURE));
-    } else if (response.error == ERROR_NOT_IMPLEMENTED) {
+    } else if (response.error == ::gatekeeper::ERROR_NOT_IMPLEMENTED) {
         return ndk::ScopedAStatus(AStatus_fromServiceSpecificError(ERROR_NOT_IMPLEMENTED));
     } else if (response.error != ERROR_NONE) {
         return ndk::ScopedAStatus(AStatus_fromServiceSpecificError(ERROR_GENERAL_FAILURE));

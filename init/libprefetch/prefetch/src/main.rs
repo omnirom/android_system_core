@@ -36,6 +36,6 @@ fn main() {
     };
 
     if let Err(err) = ret {
-        error!("{:?} command failed: {:?}", args, err);
+        error!("{args:?} command failed: {err:?}");
     }
 }

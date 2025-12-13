@@ -23,6 +23,8 @@
 #include <string>
 #include <vector>
 
+#include <android-base/chrono_utils.h>
+
 #include "result.h"
 #include "uevent.h"
 #include "uevent_handler.h"
@@ -45,21 +47,28 @@ struct ExternalFirmwareHandler {
 class FirmwareHandler : public UeventHandler {
   public:
     FirmwareHandler(std::vector<std::string> firmware_directories,
-                    std::vector<ExternalFirmwareHandler> external_firmware_handlers);
+                    std::vector<ExternalFirmwareHandler> external_firmware_handlers,
+                    bool serial_handler_after_coldboot);
     virtual ~FirmwareHandler() = default;
 
     void HandleUevent(const Uevent& uevent) override;
+    void ColdbootDone() override;
+    void EnqueueUevent(const Uevent& uevent, ThreadPool& thread_pool) override;
 
   private:
     friend void FirmwareTestWithExternalHandler(const std::string& test_name,
                                                 bool expect_new_firmware);
+    void HandleUeventInternal(const Uevent& uevent, bool in_thread_pool) const;
 
     std::string GetFirmwarePath(const Uevent& uevent) const;
-    void ProcessFirmwareEvent(const std::string& path, const std::string& firmware) const;
+    void ProcessFirmwareEvent(const std::string& path, const std::string& firmware,
+                              bool in_thread_pool, base::Timer t) const;
     bool ForEachFirmwareDirectory(std::function<bool(const std::string&)> handler) const;
 
-    std::vector<std::string> firmware_directories_;
-    std::vector<ExternalFirmwareHandler> external_firmware_handlers_;
+    std::atomic_bool enables_parallel_handlers_ = true;
+    const std::vector<std::string> firmware_directories_;
+    const std::vector<ExternalFirmwareHandler> external_firmware_handlers_;
+    const bool serial_handler_after_coldboot_ = true;
 };
 
 }  // namespace init

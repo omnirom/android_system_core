@@ -50,7 +50,8 @@ fn verify_and_fix(args: &mut MainArgs) -> Result<(), Error> {
     match &mut args.nested {
         SubCommands::Record(arg) => {
             if arg.debug && arg.int_path.is_none() {
-                arg.int_path = Some(PathBuf::from(format!("{}.int", arg.path.to_str().unwrap())));
+                let path = arg.get_pack_path();
+                arg.int_path = Some(PathBuf::from(format!("{}.int", path.to_str().unwrap())));
             }
 
             if let Some(p) = &arg.int_path {
@@ -101,7 +102,7 @@ pub(crate) fn ensure_path_exists(p: &Path) -> Result<(), Error> {
 pub fn args_from_env() -> MainArgs {
     let mut args = args_internal::args_from_env();
     if let Err(e) = verify_and_fix(&mut args) {
-        error!("failed to verify args: {}", e);
+        error!("failed to verify args: {e}");
         exit(1);
     }
     args

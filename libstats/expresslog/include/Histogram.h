@@ -65,16 +65,22 @@ public:
         const float mBinSize;
     };
 
+    [[deprecated(
+            "The libexpresslog is deprecated, transition to stats-log-api-gen is recommended")]]
     Histogram(const char* metricName, std::shared_ptr<BinOptions> binOptions);
 
     /**
      * Logs increment sample count for automatically calculated bin
      */
+    [[deprecated(
+            "The libexpresslog is deprecated, transition to stats-log-api-gen is recommended")]]
     void logSample(float sample) const;
 
     /**
      * Logs increment sample count for automatically calculated bin with uid
      */
+    [[deprecated(
+            "The libexpresslog is deprecated, transition to stats-log-api-gen is recommended")]]
     void logSampleWithUid(int32_t uid, float sample) const;
 
 private:

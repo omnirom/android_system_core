@@ -218,7 +218,6 @@ SnapshotTestPropertyFetcher::SnapshotTestPropertyFetcher(
     : properties_(std::move(props)) {
     properties_["ro.boot.slot_suffix"] = slot_suffix;
     properties_["ro.boot.dynamic_partitions"] = "true";
-    properties_["ro.boot.dynamic_partitions_retrofit"] = "false";
     properties_["ro.virtual_ab.enabled"] = "true";
 }
 
@@ -244,6 +243,10 @@ bool SnapshotTestPropertyFetcher::GetBoolProperty(const std::string& key, bool d
         default:
             return defaultValue;
     }
+}
+
+void SnapshotTestPropertyFetcher::SetProperty(const std::string& key, const std::string& value) {
+    properties_[key] = value;
 }
 
 }  // namespace snapshot

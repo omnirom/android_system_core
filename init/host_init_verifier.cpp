@@ -59,10 +59,10 @@ using android::base::Split;
 using android::properties::ParsePropertyInfoFile;
 using android::properties::PropertyInfoEntry;
 
-static std::vector<std::string> passwd_files;
+[[clang::no_destroy]] static std::vector<std::string> passwd_files;
 
 // NOTE: Keep this in sync with the order used by init.cpp LoadBootScripts()
-static const std::vector<std::string> partition_search_order =
+[[clang::no_destroy]] static const std::vector<std::string> partition_search_order =
         std::vector<std::string>({"system", "system_ext", "odm", "vendor", "product"});
 
 static std::vector<std::pair<std::string, int>> GetVendorPasswd(const std::string& passwd_file) {

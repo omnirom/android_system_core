@@ -30,7 +30,7 @@ namespace android {
 namespace init {
 
 // Fork and exec a new copy of snapuserd.
-void LaunchFirstStageSnapuserd();
+void LaunchFirstStageSnapuserd(bool use_ublk);
 
 class SnapuserdSelinuxHelper final {
     using SnapshotManager = android::snapshot::SnapshotManager;
@@ -52,21 +52,21 @@ class SnapuserdSelinuxHelper final {
     void RelaunchFirstStageSnapuserd();
     void ExecSnapuserd();
     bool TestSnapuserdIsReady();
+    void ProcessSnapuserdUeventRequests(int request_fd);
 
     std::unique_ptr<SnapshotManager> sm_;
     BlockDevInitializer block_dev_init_;
     pid_t old_pid_;
     std::vector<std::string> argv_;
+    bool using_ublk_ = false;
 };
 
 // Remove /dev/socket/snapuserd. This ensures that (1) the existing snapuserd
 // will receive no new requests, and (2) the next copy we transition to can
 // own the socket.
 void CleanupSnapuserdSocket();
-
-// Kill an instance of snapuserd given a pid.
-void KillFirstStageSnapuserd(pid_t pid);
-
+// Send the specified signal to an instance of snapuserd given a pid.
+void SignalFirstStageSnapuserd(pid_t pid, int signal);
 // Save an open fd to /system/bin (in the ramdisk) into an environment. This is
 // used to later execveat() snapuserd.
 void SaveRamdiskPathToSnapuserd();

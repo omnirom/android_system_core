@@ -428,6 +428,7 @@ void SnapshotHandler::ResumeMergeThreads() {
         std::lock_guard<std::mutex> lock(pause_merge_lock_);
         pause_merge_ = false;
     }
+    pause_merge_cv_.notify_all();
 }
 
 std::string SnapshotHandler::GetMergeStatus() {
@@ -699,16 +700,19 @@ MERGE_GROUP_STATE SnapshotHandler::ProcessMergingBlock(uint64_t new_block, void*
     int ra_index = it->second;
     MergeGroupState* blk_state = merge_blk_state_[ra_index].get();
     {
+        std::lock_guard<std::mutex> buffer_lock(GetBufferLock());
         std::unique_lock<std::mutex> lock(blk_state->m_lock);
 
         MERGE_GROUP_STATE state = blk_state->merge_state_;
         switch (state) {
             case MERGE_GROUP_STATE::GROUP_MERGE_PENDING: {
-                // If this is a merge-resume path, check if the data is
-                // available from scratch space. Data from scratch space takes
-                // higher precedence than from source device for overlapping
-                // blocks.
-                if (resume_merge_ && GetRABuffer(&lock, new_block, buffer)) {
+                // When resuming a merge after a crash, a block may have been
+                // written to the scratch space and also the base device
+                // but not yet committed via CommitMerge().
+                // We must check for and prioritize this data
+                // from the scratch space over the source block, especially
+                // for overlapping blocks or XOR ops.
+                if (GetRABuffer(&lock, new_block, buffer)) {
                     return (MERGE_GROUP_STATE::GROUP_MERGE_IN_PROGRESS);
                 }
                 blk_state->num_ios_in_progress += 1;  // ref count

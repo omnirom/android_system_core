@@ -238,3 +238,26 @@ cc_binary {
         "set-verity-state",
     ],
 }
+
+cc_binary {
+    name: "userdata_alias_remove",
+    srcs: [
+        "userdata_alias_remove.cpp",
+    ],
+    header_libs: [
+        "libbase_headers",
+    ],
+    static_libs: [
+        "libfstab",
+    ],
+    shared_libs: [
+        "libbase",
+    ],
+    system_ext_specific: true,
+    init_rc: ["userdata.alias.remove.rc"],
+    cflags: [
+        "-Werror",
+        "-Wall",
+        "-Wextra",
+    ],
+}

@@ -44,6 +44,7 @@
 #include <android-base/logging.h>
 #include <android-base/properties.h>
 #include <android-base/stringprintf.h>
+#include <build_flags.h>
 #include <cutils/android_filesystem_config.h>
 #include <processgroup/processgroup.h>
 #include <task_profiles.h>
@@ -262,6 +263,19 @@ static int RemoveCgroup(const char* cgroup, uid_t uid, pid_t pid, bool v2_path) 
     return ret;
 }
 
+// Unconditionally unfreezes all processes in the cgroup at the given path by writing "0" to its
+// cgroup.freeze file.  This is safe to call even if the cgroup is already unfrozen. The cgroup
+// might not contain any processes, but the cgroup.freeze file must exist.
+static void UnfreezeProcess(std::string const& path) {
+    // The value of cgroup.freeze when the process is not frozen.
+    static const std::string notFrozen = "0\n";
+
+    auto freeze_file = StringPrintf("%s/cgroup.freeze", path.c_str());
+    if (!android::base::WriteStringToFile(notFrozen, freeze_file)) {
+        LOG(WARNING) << "UnfreezeProcess failed to write " << freeze_file << " " << errno;
+    }
+}
+
 static bool RemoveEmptyUidCgroups(const std::string& uid_path) {
     std::unique_ptr<DIR, decltype(&closedir)> uid(opendir(uid_path.c_str()), closedir);
     bool empty = true;
@@ -280,7 +294,9 @@ static bool RemoveEmptyUidCgroups(const std::string& uid_path) {
             LOG(VERBOSE) << "Removing " << path;
             if (rmdir(path.c_str()) == -1) {
                 if (errno != EBUSY) {
-                    PLOG(WARNING) << "Failed to remove " << path;
+                    PLOG(WARNING) << "Failed to remove " << path << " " << errno;
+                } else {
+                    UnfreezeProcess(path);
                 }
                 empty = false;
             }
@@ -298,6 +314,16 @@ void removeAllEmptyProcessGroups() {
     if (CgroupGetControllerPath(CGROUPV2_HIERARCHY_NAME, &path)) {
         cgroups.push_back(path);
     }
+    if (android::libprocessgroup_flags::cgroup_v2_sys_app_isolation()) {
+        for (const char* sub : {"apps", "system"}) {
+            std::string subpath = path + "/" + sub;
+            struct stat st;
+            if (stat(subpath.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+                cgroups.push_back(subpath);
+            }
+        }
+    }
+
     if (CgroupGetMemcgAppsPath(&memcg_apps_path) && memcg_apps_path != path) {
         cgroups.push_back(memcg_apps_path);
     }

@@ -160,7 +160,7 @@ template<typename TYPE>
 typename std::enable_if<traits<TYPE>::has_trivial_copy>::type
 inline
 copy_type(TYPE* d, const TYPE* s, size_t n) {
-    memcpy(d,s,n*sizeof(TYPE));
+    memcpy(d, s, n * sizeof(TYPE));
 }
 
 template<typename TYPE>
@@ -262,12 +262,7 @@ struct key_value_pair_t {
     KEY     key;
     VALUE   value;
     key_value_pair_t() { }
-    key_value_pair_t(const key_value_pair_t& o) : key(o.key), value(o.value) { }
-    key_value_pair_t& operator=(const key_value_pair_t& o) {
-        key = o.key;
-        value = o.value;
-        return *this;
-    }
+    key_value_pair_t(const key_value_pair_t& o) = default;
     key_value_pair_t(const KEY& k, const VALUE& v) : key(k), value(v)  { }
     explicit key_value_pair_t(const KEY& k) : key(k) { }
     inline bool operator < (const key_value_pair_t& o) const {

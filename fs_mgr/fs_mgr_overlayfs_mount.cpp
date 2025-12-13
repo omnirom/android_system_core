@@ -49,10 +49,6 @@
 #include "fs_mgr_overlayfs_mount.h"
 #include "fs_mgr_priv.h"
 
-// Flag to simplify algorithm for choosing which partitions to overlay to simply overlay
-// all dynamic partitions
-constexpr bool overlay_dynamic_partitions_only = true;
-
 using namespace std::literals;
 using namespace android::fs_mgr;
 using namespace android::storage_literals;
@@ -60,7 +56,6 @@ using namespace android::storage_literals;
 constexpr char kPreferCacheBackingStorageProp[] = "fs_mgr.overlayfs.prefer_cache_backing_storage";
 
 constexpr char kCacheMountPoint[] = "/cache";
-constexpr char kPhysicalDevice[] = "/dev/block/by-name/";
 
 // Mount tree to temporarily hold references to submounts.
 constexpr char kMoveMountTempDir[] = "/dev/remount";
@@ -131,95 +126,6 @@ bool fs_mgr_filesystem_has_space(const std::string& mount_point) {
 
     return (vst.f_bfree >= (vst.f_blocks * kPercentThreshold / 100)) &&
            (static_cast<uint64_t>(vst.f_bfree) * vst.f_frsize) >= kSizeThreshold;
-}
-
-static bool fs_mgr_update_blk_device(FstabEntry* entry) {
-    if (entry->fs_mgr_flags.logical) {
-        fs_mgr_update_logical_partition(entry);
-    }
-    if (access(entry->blk_device.c_str(), F_OK) == 0) {
-        return true;
-    }
-    if (entry->blk_device != "/dev/root") {
-        return false;
-    }
-
-    // special case for system-as-root (taimen and others)
-    auto blk_device = kPhysicalDevice + "system"s;
-    if (access(blk_device.c_str(), F_OK)) {
-        blk_device += fs_mgr_get_slot_suffix();
-        if (access(blk_device.c_str(), F_OK)) {
-            return false;
-        }
-    }
-    entry->blk_device = blk_device;
-    return true;
-}
-
-static bool fs_mgr_has_shared_blocks(const std::string& mount_point, const std::string& dev) {
-    struct statfs fs;
-    if ((statfs((mount_point + "/lost+found").c_str(), &fs) == -1) ||
-        (fs.f_type != EXT4_SUPER_MAGIC)) {
-        return false;
-    }
-
-    android::base::unique_fd fd(open(dev.c_str(), O_RDONLY | O_CLOEXEC));
-    if (fd < 0) return false;
-
-    struct ext4_super_block sb;
-    if ((TEMP_FAILURE_RETRY(lseek64(fd, 1024, SEEK_SET)) < 0) ||
-        (TEMP_FAILURE_RETRY(read(fd, &sb, sizeof(sb))) < 0)) {
-        return false;
-    }
-
-    struct fs_info info;
-    if (ext4_parse_sb(&sb, &info) < 0) return false;
-
-    return (info.feat_ro_compat & EXT4_FEATURE_RO_COMPAT_SHARED_BLOCKS) != 0;
-}
-
-#define F2FS_SUPER_OFFSET 1024
-#define F2FS_FEATURE_OFFSET 2180
-#define F2FS_FEATURE_RO 0x4000
-static bool fs_mgr_is_read_only_f2fs(const std::string& dev) {
-    if (!fs_mgr_is_f2fs(dev)) return false;
-
-    android::base::unique_fd fd(open(dev.c_str(), O_RDONLY | O_CLOEXEC));
-    if (fd < 0) return false;
-
-    __le32 feat;
-    if ((TEMP_FAILURE_RETRY(lseek64(fd, F2FS_SUPER_OFFSET + F2FS_FEATURE_OFFSET, SEEK_SET)) < 0) ||
-        (TEMP_FAILURE_RETRY(read(fd, &feat, sizeof(feat))) < 0)) {
-        return false;
-    }
-
-    return (feat & cpu_to_le32(F2FS_FEATURE_RO)) != 0;
-}
-
-static bool fs_mgr_overlayfs_enabled(FstabEntry* entry) {
-    // readonly filesystem, can not be mount -o remount,rw
-    // for squashfs, erofs, or if there are shared blocks that prevent remount,rw
-    if (entry->fs_type == "erofs" || entry->fs_type == "squashfs") {
-        return true;
-    }
-
-    // blk_device needs to be setup so we can check superblock.
-    // If we fail here, because during init first stage and have doubts.
-    if (!fs_mgr_update_blk_device(entry)) {
-        return true;
-    }
-
-    // f2fs read-only mode doesn't support remount,rw
-    if (fs_mgr_is_read_only_f2fs(entry->blk_device)) {
-        return true;
-    }
-
-    // check if ext4 de-dupe
-    auto has_shared_blocks = fs_mgr_has_shared_blocks(entry->mount_point, entry->blk_device);
-    if (!has_shared_blocks && (entry->mount_point == "/system")) {
-        has_shared_blocks = fs_mgr_has_shared_blocks("/", entry->blk_device);
-    }
-    return has_shared_blocks;
 }
 
 const std::string fs_mgr_mount_point(const std::string& mount_point) {
@@ -644,24 +550,7 @@ bool OverlayfsSetupAllowed(bool verbose) {
 }
 
 bool fs_mgr_wants_overlayfs(FstabEntry* entry) {
-    // Don't check entries that are managed by vold.
-    if (entry->fs_mgr_flags.vold_managed || entry->fs_mgr_flags.recovery_only) return false;
-
-    // *_other doesn't want overlayfs.
-    if (entry->fs_mgr_flags.slot_select_other) return false;
-
-    // Only concerned with readonly partitions.
-    if (!(entry->flags & MS_RDONLY)) return false;
-
-    // If unbindable, do not allow overlayfs as this could expose us to
-    // security issues.  On Android, this could also be used to turn off
-    // the ability to overlay an otherwise acceptable filesystem since
-    // /system and /vendor are never bound(sic) to.
-    if (entry->flags & MS_UNBINDABLE) return false;
-
-    if (!fs_mgr_overlayfs_enabled(entry)) return false;
-
-    return true;
+    return entry->fs_mgr_flags.overlay_on || entry->fs_mgr_flags.logical;
 }
 
 Fstab fs_mgr_overlayfs_candidate_list(const Fstab& fstab) {
@@ -675,38 +564,9 @@ Fstab fs_mgr_overlayfs_candidate_list(const Fstab& fstab) {
     for (const auto& entry : fstab) {
         // fstab overlay flag overrides all other behavior
         if (entry.fs_mgr_flags.overlay_off) continue;
-        if (entry.fs_mgr_flags.overlay_on) {
+        if (entry.fs_mgr_flags.overlay_on || entry.fs_mgr_flags.logical) {
             candidates.push_back(entry);
-            continue;
         }
-
-        // overlay_dynamic_partitions_only simplifies logic to overlay exactly dynamic partitions
-        if (overlay_dynamic_partitions_only) {
-            if (entry.fs_mgr_flags.logical) candidates.push_back(entry);
-            continue;
-        }
-
-        // Filter out partitions whose type doesn't match what's mounted.
-        // This avoids spammy behavior on devices which can mount different
-        // filesystems for each partition.
-        auto proc_mount_point = (entry.mount_point == "/system") ? "/" : entry.mount_point;
-        auto mounted = GetEntryForMountPoint(&mounts, proc_mount_point);
-        if (!mounted || mounted->fs_type != entry.fs_type) {
-            continue;
-        }
-
-        FstabEntry new_entry = entry;
-        if (!fs_mgr_overlayfs_already_mounted(entry.mount_point) &&
-            !fs_mgr_wants_overlayfs(&new_entry)) {
-            continue;
-        }
-        const auto new_mount_point = fs_mgr_mount_point(new_entry.mount_point);
-        if (std::find_if(candidates.begin(), candidates.end(), [&](const auto& it) {
-                return fs_mgr_mount_point(it.mount_point) == new_mount_point;
-            }) != candidates.end()) {
-            continue;
-        }
-        candidates.push_back(std::move(new_entry));
     }
     return candidates;
 }

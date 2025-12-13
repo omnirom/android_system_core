@@ -709,7 +709,9 @@ TEST_F(LooperTest, RemoveMessage_WhenRemovingAllMessagesForHandler_ShouldRemoveT
     mLooper->removeMessages(handler);
 
     StopWatch stopWatch("pollOnce");
-    int result = mLooper->pollOnce(0);
+    // We use a non-zero timeout because pollOnce is called with a timeout of 0 if the MessageQueue
+    // has messages to handle. Here, all messages have been removed.
+    int result = mLooper->pollOnce(100);
     int32_t elapsedMillis = ns2ms(stopWatch.elapsedTime());
 
     EXPECT_NEAR(0, elapsedMillis, TIMING_TOLERANCE_MS)
@@ -719,7 +721,7 @@ TEST_F(LooperTest, RemoveMessage_WhenRemovingAllMessagesForHandler_ShouldRemoveT
     EXPECT_EQ(size_t(0), handler->messages.size())
             << "no messages to handle";
 
-    result = mLooper->pollOnce(0);
+    result = mLooper->pollOnce(100);
 
     EXPECT_EQ(Looper::POLL_TIMEOUT, result)
             << "pollOnce result should be Looper::POLL_TIMEOUT because there was nothing to do";

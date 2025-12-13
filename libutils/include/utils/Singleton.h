@@ -70,7 +70,7 @@ protected:
 private:
     Singleton(const Singleton&);
     Singleton& operator = (const Singleton&);
-    static Mutex sLock;
+    [[clang::no_destroy]] static Mutex sLock;
     static TYPE* sInstance;
 };
 

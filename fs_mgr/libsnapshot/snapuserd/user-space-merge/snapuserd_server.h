@@ -51,11 +51,12 @@ class UserSnapshotServer {
     std::vector<struct pollfd> watched_fds_;
     bool is_socket_present_ = false;
     bool is_server_running_ = false;
+    bool is_ublk_enabled_ = false;
     std::unique_ptr<ISnapshotHandlerManager> handlers_;
     std::unique_ptr<IBlockServerFactory> block_server_factory_;
 
     std::mutex lock_;
-
+    UeventHelperCallback uevent_helper_ = nullptr;
     void AddWatchedFd(android::base::borrowed_fd fd, int events);
     void AcceptClient();
     bool HandleClient(android::base::borrowed_fd fd, int revents);
@@ -71,11 +72,12 @@ class UserSnapshotServer {
 
     void JoinAllThreads();
     bool StartWithSocket(bool start_listening);
+    uint64_t GetBlockDeviceNumSectors(const std::string& deviceName);
 
   public:
     UserSnapshotServer();
     ~UserSnapshotServer();
-
+    void Initialize(bool use_ublk = false);
     bool Start(const std::string& socketname);
     bool Run();
     void Interrupt();
@@ -93,6 +95,10 @@ class UserSnapshotServer {
     void ReceivedSocketSignal() { received_socket_signal_ = true; }
     void SetServerRunning() { is_server_running_ = true; }
     bool IsServerRunning() { return is_server_running_; }
+    bool SendSnapshotDeviceName(android::base::borrowed_fd fd, const std::string& device);
+    bool SendSnapshotControlDeviceName(android::base::borrowed_fd fd, const std::string& device);
+    void SetUeventHelper(UeventHelperCallback callback);
+    UeventHelperCallback GetUeventHelper() { return uevent_helper_; }
 };
 
 }  // namespace snapshot

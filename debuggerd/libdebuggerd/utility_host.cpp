@@ -103,6 +103,105 @@ std::string describe_pac_enabled_keys(long value) {
   return describe_end(value, desc);
 }
 
+static std::string describe_ec(uint8_t ec) {
+  // ESR exception encodings:
+  //   https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-
+  //   https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL2--Exception-Syndrome-Register--EL2-
+  //   https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL3--Exception-Syndrome-Register--EL3-
+  // Kernel header:
+  //    https://android.googlesource.com/kernel/common/+/android-mainline/arch/arm64/include/asm/esr.h
+  switch (ec) {
+    case 0x00:
+      return "Unknown";
+    case 0x01:
+      return "WFx";
+    case 0x03:
+      return "MCR/MRC";
+    case 0x04:
+      return "MCRR/MRRC";
+    case 0x05:
+      return "MCR/MRC";
+    case 0x06:
+      return "LDC/STC";
+    case 0x07:
+      return "SIMD/SME/SVE";
+    case 0x08:  // EL2 only
+      return "VMRS";
+    case 0x09:  // EL2 and above
+    case 0x1C:  // EL1 and above
+      return "PAC";
+    case 0x0C:
+      return "MRRC";
+    case 0x0D:
+      return "BTI";
+    case 0x0E:
+      return "Illegal Instruction";
+    case 0x11:
+      return "SVC32";
+    case 0x12:  // EL2 only
+      return "HVC32";
+    case 0x13:  // EL2 and above
+      return "SMC32";
+    case 0x15:
+      return "SVC64";
+    case 0x16:  // EL2 and above
+      return "HVC64";
+    case 0x17:  // EL2 and above
+      return "SMC64";
+    case 0x18:
+      return "SYS64";
+    case 0x19:
+      return "SVE";
+    case 0x1A:  // EL2 only
+      return "ERET";
+    case 0x1D:
+      return "SME";
+    case 0x1F:  // EL3 only
+      return "Implementation Defined";
+    case 0x20:
+    case 0x21:
+      return "Instruction Abort";
+    case 0x22:
+      return "PC Alignment";
+    case 0x24:
+    case 0x25:
+      return "Data Abort";
+    case 0x26:
+      return "SP Alignment";
+    case 0x27:
+      return "MOPS";
+    case 0x28:
+    case 0x2C:
+      return "FP Exception";
+    case 0x2D:
+      return "GCS";
+    case 0x2F:
+      return "SERROR";
+    case 0x30:
+    case 0x31:
+    case 0x38:
+      return "BKPT";
+    case 0x32:
+    case 0x33:
+      return "SW Step";
+    case 0x34:
+    case 0x35:
+      return "Watchpoint";
+    case 0x3A:  // EL2 only
+      return "Vector Catch";
+    case 0x3C:
+      return "BRK";
+    default:
+      return "Unrecognized";
+  }
+}
+
+std::string describe_esr(uint64_t value) {
+  // EC part of the esr.
+  uint8_t ec = (value >> 26) & 0x3f;
+  return android::base::StringPrintf("(%s Exception 0x%02x)", describe_ec(ec).c_str(), ec);
+}
+
 static std::string oct_encode(const std::string& data, bool (*should_encode_func)(int)) {
   std::string oct_encoded;
   oct_encoded.reserve(data.size());

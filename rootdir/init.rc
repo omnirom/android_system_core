@@ -75,11 +75,14 @@ on early-init
     # Mount tracefs (with GID=AID_READTRACEFS)
     mount tracefs tracefs /sys/kernel/tracing gid=3012
 
+    # Run the init_dev_config service to configure the device.
+    exec_start init_dev_config
+
     # Run apexd-bootstrap so that APEXes that provide critical libraries
     # become available. Note that this is executed as exec_start to ensure that
     # the libraries are available to the processes started after this statement.
     exec_start apexd-bootstrap
-    perform_apex_config --bootstrap
+    perform_apex_config
 
     # These must already exist by the time boringssl_self_test32 / boringssl_self_test64 run.
     mkdir /dev/boringssl 0755 root root
@@ -147,13 +150,14 @@ on init
 
     # cpuctl hierarchy for devices using utilclamp
     mkdir /dev/cpuctl/foreground
-    mkdir /dev/cpuctl/foreground_window
     mkdir /dev/cpuctl/background
     mkdir /dev/cpuctl/top-app
     mkdir /dev/cpuctl/rt
     mkdir /dev/cpuctl/system
     mkdir /dev/cpuctl/system-background
     mkdir /dev/cpuctl/dex2oat
+    # move foreground_window to the bottom to preserve the original order
+    mkdir /dev/cpuctl/foreground_window
     chown system system /dev/cpuctl
     chown system system /dev/cpuctl/foreground
     chown system system /dev/cpuctl/foreground_window
@@ -332,6 +336,7 @@ on init
     write /proc/sys/kernel/sched_child_runs_first 0
 
     write /proc/sys/kernel/randomize_va_space 2
+    write /proc/sys/kernel/kptr_restrict 2
     write /proc/sys/vm/mmap_min_addr 32768
     write /proc/sys/net/ipv4/ping_group_range "0 2147483647"
     write /proc/sys/net/unix/max_dgram_qlen 2400
@@ -362,9 +367,6 @@ on init
     mkdir /dev/cpuset/foreground
     copy /dev/cpuset/cpus /dev/cpuset/foreground/cpus
     copy /dev/cpuset/mems /dev/cpuset/foreground/mems
-    mkdir /dev/cpuset/foreground_window
-    copy /dev/cpuset/cpus /dev/cpuset/foreground_window/cpus
-    copy /dev/cpuset/mems /dev/cpuset/foreground_window/mems
     mkdir /dev/cpuset/background
     copy /dev/cpuset/cpus /dev/cpuset/background/cpus
     copy /dev/cpuset/mems /dev/cpuset/background/mems
@@ -384,6 +386,11 @@ on init
     mkdir /dev/cpuset/top-app
     copy /dev/cpuset/cpus /dev/cpuset/top-app/cpus
     copy /dev/cpuset/mems /dev/cpuset/top-app/mems
+
+    # move foreground_window to the bottom to preserve the original order
+    mkdir /dev/cpuset/foreground_window
+    copy /dev/cpuset/cpus /dev/cpuset/foreground_window/cpus
+    copy /dev/cpuset/mems /dev/cpuset/foreground_window/mems
 
     # create a cpuset for camera daemon processes
     mkdir /dev/cpuset/camera-daemon
@@ -438,7 +445,7 @@ on init
 
     # make the PSI monitor accessible to others
     chown system system /proc/pressure/memory
-    chmod 0664 /proc/pressure/memory
+    chmod 0666 /proc/pressure/memory
 
     mount bpf bpf /sys/fs/bpf nodev noexec nosuid
 
@@ -654,6 +661,8 @@ on post-fs
 
     mkdir /metadata/apex 0700 root system
     mkdir /metadata/apex/sessions 0700 root system
+    mkdir /metadata/apex/images 0700 root system
+    mkdir /metadata/apex/config 0700 root system
     # On some devices we see a weird behaviour in which /metadata/apex doesn't
     # have a correct label. To workaround this bug, explicitly call restorecon
     # on /metadata/apex. For most of the boot sequences /metadata/apex will
@@ -752,7 +761,6 @@ on post-fs-data
     mkdir /data/property 0700 root root encryption=Require
     load_persist_props
 
-    start logd
     start logd-reinit
 
     # Some existing vendor rc files use 'on load_persist_props_action' to know
@@ -776,6 +784,7 @@ on post-fs-data
     mkdir /data/apex/active 0755 root system
     mkdir /data/apex/backup 0700 root system
     mkdir /data/apex/decompressed 0755 root system encryption=Require
+    mkdir /data/apex/images 0755 root system
     mkdir /data/app-staging 0751 system system encryption=DeleteIfNecessary
     mkdir /data/apex/ota_reserved 0700 root system encryption=Require
     setprop apexd.status ""
@@ -837,7 +846,6 @@ on post-fs-data
     mkdir /data/misc/boottrace 0771 system shell
     mkdir /data/misc/update_engine 0700 root root
     mkdir /data/misc/update_engine_log 02750 root update_engine_log
-    chown root update_engine_log /data/misc/update_engine_log
     mkdir /data/misc/trace 0700 root root
     # create location to store surface and window trace files
     mkdir /data/misc/wmtrace 0700 system system
@@ -865,6 +873,10 @@ on post-fs-data
     mkdir /data/misc/odsign/metrics 0770 root system
     # directory used for connectivity blob store.
     mkdir /data/misc/connectivityblobdb 0770 system system
+
+    # Setup SurfaceFlinger shader caching
+    mkdir /data/misc/surfaceflinger 0700 system system
+    setprop service.sf.cache_dir_available 1
 
     # Directory for VirtualizationService temporary image files.
     # Delete any stale files owned by the old virtualizationservice uid (b/230056726).
@@ -911,7 +923,7 @@ on post-fs-data
     mkdir /data/ota 0771 root root encryption=Require
 
     # create the OTA package directory. It will be accessed by GmsCore (cache
-    # group), update_engine and update_verifier.
+    # group), update_engine
     mkdir /data/ota_package 0770 system cache encryption=Require
 
     # create resource-cache and double-check the perms
@@ -1038,6 +1050,7 @@ on post-fs-data
 
     # Create directories for statsd
     mkdir /data/misc/stats-active-metric/ 0770 statsd system
+    mkdir /data/misc/stats-atoms/ 0775 statsd system
     mkdir /data/misc/stats-data/ 0770 statsd system
     mkdir /data/misc/stats-data/restricted-data 0770 statsd system
     mkdir /data/misc/stats-metadata/ 0770 statsd system
@@ -1051,11 +1064,7 @@ on post-fs-data
     wait_for_prop keystore.module_hash.sent true
     perform_apex_config
 
-    exec_start system_aconfigd_mainline_init
     start system_aconfigd_socket_service
-
-    # start mainline aconfigd init, after transition, the above system_aconfigd_mainline_init
-    # will be deprecated
     exec_start mainline_aconfigd_init
     start mainline_aconfigd_socket_service
 
@@ -1098,11 +1107,6 @@ on post-fs-data
     # completed and apexd.status becomes "ready".
     exec_start apexd-snapshotde
 
-    # sys.memfd_use set to false by default, which keeps it disabled
-    # until it is confirmed that apps and vendor processes don't make
-    # IOCTLs on ashmem fds any more.
-    setprop sys.use_memfd false
-
     # Set fscklog permission
     chown root system /dev/fscklogs/log
     chmod 0770 /dev/fscklogs/log
@@ -1127,7 +1131,16 @@ on property:vold.checkpoint_committed=1
 # stuff) and we absolutely want to be before netd and the system boot slot is
 # considered to have booted successfully.
 on load-bpf-programs
+    # Temporarily relax access to kallsyms so that bpfloader can resolve kernel symbols
+    # at load time.
+    #
+    # NOTE: Still requires CAP_SYSLOG and sepolicy allow rules to read /proc/kallsyms
+    write /proc/sys/kernel/kptr_restrict 1
+
     exec_start bpfloader
+
+    # Restore kallsyms protection after bpf programs have been loaded.
+    write /proc/sys/kernel/kptr_restrict 2
 
 on bpf-progs-loaded
     start netd
@@ -1136,8 +1149,6 @@ on bpf-progs-loaded
 # to start-zygote in device's init.rc to unblock zygote start.
 on zygote-start
     wait_for_prop odsign.verification.done 1
-    # A/B update verifier that marks a successful boot.
-    exec_start update_verifier
     start statsd
     start zygote
     start zygote_secondary
@@ -1146,6 +1157,13 @@ on boot && property:ro.config.low_ram=true
     # Tweak background writeout
     write /proc/sys/vm/dirty_expire_centisecs 200
     write /proc/sys/vm/dirty_background_ratio  5
+
+on property:sys.boot_completed=1 && property:ro.config.batteryless=true
+    # Flush data and checkpoint more aggressively to prepare sudden power cuts
+    write /proc/sys/vm/dirty_expire_centisecs 200
+    write /proc/sys/vm/dirty_writeback_centisecs 200
+    write /proc/sys/vm/dirty_background_ratio  5
+    write /dev/sys/fs/by-name/userdata/cp_interval 2
 
 on boot && property:suspend.disable_sync_on_suspend=true
     write /sys/power/sync_on_suspend 0
@@ -1185,7 +1203,7 @@ on boot
     # to avoid power consumption when system becomes mostly idle. Be careful
     # to make it too large, since it may bring userdata loss, if they
     # are not aware of using fsync()/sync() to prepare sudden power-cut.
-    write /dev/sys/fs/by-name/userdata/cp_interval 200
+    write /dev/sys/fs/by-name/userdata/cp_interval 30
     write /dev/sys/fs/by-name/userdata/gc_urgent_sleep_time 50
     write /dev/sys/fs/by-name/userdata/iostat_period_ms 1000
     write /dev/sys/fs/by-name/userdata/iostat_enable 1
@@ -1294,41 +1312,7 @@ on property:perf.drop_caches=3
 on property:net.tcp_def_init_rwnd=*
     write /proc/sys/net/ipv4/tcp_default_init_rwnd ${net.tcp_def_init_rwnd}
 
-# perf_event_open syscall security:
-# Newer kernels have the ability to control the use of the syscall via SELinux
-# hooks. init tests for this, and sets sys_init.perf_lsm_hooks to 1 if the
-# kernel has the hooks. In this case, the system-wide perf_event_paranoid
-# sysctl is set to -1 (unrestricted use), and the SELinux policy is used for
-# controlling access. On older kernels, the paranoid value is the only means of
-# controlling access. It is normally 3 (allow only root), but the shell user
-# can lower it to 1 (allowing thread-scoped pofiling) via security.perf_harden.
-on load-bpf-programs && property:sys.init.perf_lsm_hooks=1
-    write /proc/sys/kernel/perf_event_paranoid -1
-on property:security.perf_harden=0 && property:sys.init.perf_lsm_hooks=""
-    write /proc/sys/kernel/perf_event_paranoid 1
-on property:security.perf_harden=1 && property:sys.init.perf_lsm_hooks=""
-    write /proc/sys/kernel/perf_event_paranoid 3
-
-# Additionally, simpleperf profiler uses debug.* and security.perf_harden
-# sysprops to be able to indirectly set these sysctls.
-on property:security.perf_harden=0
-    write /proc/sys/kernel/perf_event_max_sample_rate ${debug.perf_event_max_sample_rate:-100000}
-    write /proc/sys/kernel/perf_cpu_time_max_percent ${debug.perf_cpu_time_max_percent:-25}
-    write /proc/sys/kernel/perf_event_mlock_kb ${debug.perf_event_mlock_kb:-516}
-# Default values.
-on property:security.perf_harden=1
-    write /proc/sys/kernel/perf_event_max_sample_rate 100000
-    write /proc/sys/kernel/perf_cpu_time_max_percent 25
-    write /proc/sys/kernel/perf_event_mlock_kb 516
-
-# This property can be set only on userdebug/eng. See neverallow rule in
-# /system/sepolicy/private/property.te .
-on property:security.lower_kptr_restrict=1
-    write /proc/sys/kernel/kptr_restrict 0
-
-on property:security.lower_kptr_restrict=0
-    write /proc/sys/kernel/kptr_restrict 2
-
+import /system/etc/init/init-perfetto.rc
 
 # on shutdown
 # In device's init.rc, this trigger can be used to do device-specific actions
@@ -1342,6 +1326,18 @@ service ueventd /system/bin/ueventd
     seclabel u:r:ueventd:s0
     user root
     shutdown critical
+
+# This service takes care of early initialization of device configuration at
+# runtime, like per-SKU settings or sysprops. The service runs before apexd
+# bootstrap, which means it can also be used to perform conditional APEX
+# activation via selection sysprops (e.g. setting ro.boot.vendor.apex.*).
+# The 'ro.vendor.init_dev_config.path' sysprop should be configured at build
+# time via PRODUCT_VENDOR_PROPERTIES, and must point to a binary built with
+# bootstrap bionic and labeled as 'init_dev_config_exec'.
+service init_dev_config ${ro.vendor.init_dev_config.path}
+    oneshot
+    user system
+    seclabel u:r:init_dev_config:s0
 
 service console /system/bin/sh
     class core

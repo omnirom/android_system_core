@@ -65,6 +65,7 @@ void engrave_tombstone_ucontext(int tombstone_fd, int proto_fd, uint64_t abort_m
   log.amfd_data = nullptr;
 
   std::string thread_name = get_thread_name(target_tid);
+  std::string executable_name = get_executable_name(target_tid);
   std::vector<std::string> command_line = get_command_line(pid);
 
   std::unique_ptr<unwindstack::Regs> regs(
@@ -74,14 +75,21 @@ void engrave_tombstone_ucontext(int tombstone_fd, int proto_fd, uint64_t abort_m
   android::base::ReadFileToString("/proc/self/attr/current", &selinux_label);
 
   std::map<pid_t, ThreadInfo> threads;
-  threads[target_tid] = ThreadInfo {
-    .registers = std::move(regs), .uid = uid, .tid = target_tid,
-    .thread_name = std::move(thread_name), .pid = pid, .command_line = std::move(command_line),
-    .selinux_label = std::move(selinux_label), .siginfo = siginfo, .signo = siginfo->si_signo,
-    // Only supported on aarch64 for now.
+  threads[target_tid] = ThreadInfo{
+      .registers = std::move(regs),
+      .uid = uid,
+      .tid = target_tid,
+      .thread_name = std::move(thread_name),
+      .pid = pid,
+      .executable_name = std::move(executable_name),
+      .command_line = std::move(command_line),
+      .selinux_label = std::move(selinux_label),
+      .siginfo = siginfo,
+      .signo = siginfo->si_signo,
+  // Only supported on aarch64 for now.
 #if defined(__aarch64__)
-    .tagged_addr_ctrl = prctl(PR_GET_TAGGED_ADDR_CTRL, 0, 0, 0, 0),
-    .pac_enabled_keys = prctl(PR_PAC_GET_ENABLED_KEYS, 0, 0, 0, 0),
+      .tagged_addr_ctrl = prctl(PR_GET_TAGGED_ADDR_CTRL, 0, 0, 0, 0),
+      .pac_enabled_keys = prctl(PR_PAC_GET_ENABLED_KEYS, 0, 0, 0, 0),
 #endif
   };
   const ThreadInfo& thread = threads[pid];

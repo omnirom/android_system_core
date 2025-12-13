@@ -47,7 +47,8 @@ static bool CompareGeometry(const LpMetadataGeometry& g1, const LpMetadataGeomet
            g1.logical_block_size == g2.logical_block_size;
 }
 
-std::string SerializeMetadata(const LpMetadata& input) {
+// Unvalidated serialization.
+static std::string SerializeMetadata(const LpMetadata& input) {
     LpMetadata metadata = input;
     LpMetadataHeader& header = metadata.header;
 
@@ -81,26 +82,35 @@ std::string SerializeMetadata(const LpMetadata& input) {
     return header_blob + tables;
 }
 
+// Validated serialization.
+std::string ValidateAndSerializeMetadata(const LpMetadata& metadata) {
+    const LpMetadataGeometry& geometry = metadata.geometry;
+
+    std::string blob = SerializeMetadata(metadata);
+
+    // Make sure we're writing within the space reserved.
+    if (blob.size() > geometry.metadata_max_size) {
+        LERROR << "Logical partition metadata is too large. " << blob.size() << " > "
+               << geometry.metadata_max_size;
+        return {};
+    }
+    return blob;
+}
+
 // Perform checks so we don't accidentally overwrite valid metadata with
 // potentially invalid metadata, or random partition data with metadata.
 static bool ValidateAndSerializeMetadata([[maybe_unused]] const IPartitionOpener& opener,
-                                         const LpMetadata& metadata, const std::string& slot_suffix,
-                                         std::string* blob) {
-    const LpMetadataGeometry& geometry = metadata.geometry;
-
-    *blob = SerializeMetadata(metadata);
-
-    // Make sure we're writing within the space reserved.
-    if (blob->size() > geometry.metadata_max_size) {
-        LERROR << "Logical partition metadata is too large. " << blob->size() << " > "
-               << geometry.metadata_max_size;
+                                         const LpMetadata& metadata, std::string* blob) {
+    *blob = ValidateAndSerializeMetadata(metadata);
+    if (blob->empty()) {
         return false;
     }
 
     // Make sure the device has enough space to store two backup copies of the
     // metadata.
-    uint64_t reserved_size = LP_METADATA_GEOMETRY_SIZE +
-                             uint64_t(geometry.metadata_max_size) * geometry.metadata_slot_count;
+    uint64_t reserved_size =
+            LP_METADATA_GEOMETRY_SIZE +
+            uint64_t(metadata.geometry.metadata_max_size) * metadata.geometry.metadata_slot_count;
     uint64_t total_reserved = LP_PARTITION_RESERVED_BYTES + reserved_size * 2;
 
     const LpMetadataBlockDevice* super_device = GetMetadataSuperBlockDevice(metadata);
@@ -116,12 +126,8 @@ static bool ValidateAndSerializeMetadata([[maybe_unused]] const IPartitionOpener
     for (const auto& block_device : metadata.block_devices) {
         std::string partition_name = GetBlockDevicePartitionName(block_device);
         if (block_device.flags & LP_BLOCK_DEVICE_SLOT_SUFFIXED) {
-            if (slot_suffix.empty()) {
-                LERROR << "Block device " << partition_name << " requires a slot suffix,"
-                       << " which could not be derived from the super partition name.";
-                return false;
-            }
-            partition_name += slot_suffix;
+            LERROR << "Slot-suffixed super is no longer supported.";
+            return false;
         }
 
         if ((block_device.first_logical_sector + 1) * LP_SECTOR_SIZE > block_device.size) {
@@ -253,21 +259,15 @@ bool FlashPartitionTable(const IPartitionOpener& opener, const std::string& supe
         return false;
     }
 
-    // This is only used in update_engine and fastbootd, where the super
-    // partition should be specified as a name (or by-name link), and
-    // therefore, we should be able to extract a slot suffix.
-    std::string slot_suffix = GetPartitionSlotSuffix(super_partition);
-
     // Before writing geometry and/or logical partition tables, perform some
     // basic checks that the geometry and tables are coherent, and will fit
     // on the given block device.
     std::string metadata_blob;
-    if (!ValidateAndSerializeMetadata(opener, metadata, slot_suffix, &metadata_blob)) {
+    if (!ValidateAndSerializeMetadata(opener, metadata, &metadata_blob)) {
         return false;
     }
 
-    // On retrofit devices, super_partition is system_other and might be set to readonly by
-    // fs_mgr_set_blk_ro(). Unset readonly so that fd can be written to.
+    // Make sure the block device is writable.
     if (!SetBlockReadonly(fd.get(), false)) {
         PWARNING << __PRETTY_FUNCTION__ << " BLKROSET 0 failed: " << super_partition;
     }
@@ -329,13 +329,11 @@ bool UpdatePartitionTable(const IPartitionOpener& opener, const std::string& sup
         return false;
     }
 
-    std::string slot_suffix = SlotSuffixForSlotNumber(slot_number);
-
     // Before writing geometry and/or logical partition tables, perform some
     // basic checks that the geometry and tables are coherent, and will fit
     // on the given block device.
     std::string blob;
-    if (!ValidateAndSerializeMetadata(opener, metadata, slot_suffix, &blob)) {
+    if (!ValidateAndSerializeMetadata(opener, metadata, &blob)) {
         return false;
     }
 
@@ -367,7 +365,7 @@ bool UpdatePartitionTable(const IPartitionOpener& opener, const std::string& sup
         // synchronize the backup copy. This guarantees that a partial write
         // still leaves one copy intact.
         std::string old_blob;
-        if (!ValidateAndSerializeMetadata(opener, *primary.get(), slot_suffix, &old_blob)) {
+        if (!ValidateAndSerializeMetadata(opener, *primary.get(), &old_blob)) {
             LERROR << "Error serializing primary metadata to repair corrupted backup";
             return false;
         }
@@ -379,7 +377,7 @@ bool UpdatePartitionTable(const IPartitionOpener& opener, const std::string& sup
         // The backup copy is coherent, and the primary is not. Sync it for
         // safety.
         std::string old_blob;
-        if (!ValidateAndSerializeMetadata(opener, *backup.get(), slot_suffix, &old_blob)) {
+        if (!ValidateAndSerializeMetadata(opener, *backup.get(), &old_blob)) {
             LERROR << "Error serializing backup metadata to repair corrupted primary";
             return false;
         }

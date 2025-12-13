@@ -35,6 +35,7 @@ static inline size_t getpagesize() {
 }
 #endif
 
+using android::base::borrowed_fd;
 using android::base::unique_fd;
 
 TEST(AshmemBaseTest, BasicTest) {
@@ -47,18 +48,18 @@ TEST(AshmemBaseTest, BasicTest) {
     ASSERT_TRUE(ashmem_valid(fd));
     ASSERT_EQ(size, static_cast<size_t>(ashmem_get_size_region(fd)));
 
-    std::unique_ptr<android::base::MappedFile> mapped =
-            android::base::MappedFile::FromFd(fd, 0, size, PROT_READ | PROT_WRITE);
-    EXPECT_TRUE(mapped.get() != nullptr);
+    auto mapped =
+            android::base::MappedFile::Create(borrowed_fd(fd), 0, size, PROT_READ | PROT_WRITE);
+    EXPECT_TRUE(mapped.has_value());
     void* region1 = mapped->data();
     EXPECT_TRUE(region1 != nullptr);
 
     memcpy(region1, data.data(), size);
     ASSERT_EQ(0, memcmp(region1, data.data(), size));
 
-    std::unique_ptr<android::base::MappedFile> mapped2 =
-            android::base::MappedFile::FromFd(fd, 0, size, PROT_READ | PROT_WRITE);
-    EXPECT_TRUE(mapped2.get() != nullptr);
+    auto mapped2 =
+            android::base::MappedFile::Create(borrowed_fd(fd), 0, size, PROT_READ | PROT_WRITE);
+    EXPECT_TRUE(mapped2.has_value());
     void* region2 = mapped2->data();
     EXPECT_TRUE(region2 != nullptr);
     ASSERT_EQ(0, memcmp(region2, data.data(), size));

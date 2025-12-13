@@ -28,6 +28,8 @@ namespace init {
 // Returns number of violators.
 int StopServicesAndLogViolations(const std::set<std::string>& services,
                                  std::chrono::milliseconds timeout, bool terminate);
+// Parses and handles a setprop sys.shutdown.requested message.
+void HandleShutdownRequestedMessage(const std::string& command);
 // Parses and handles a setprop sys.powerctl message.
 void HandlePowerctlMessage(const std::string& command);
 

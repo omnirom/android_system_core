@@ -190,7 +190,8 @@ bool SnapuserdClient::WaitForDeviceDelete(const std::string& control_device) {
     }
     std::string response = Receivemsg();
     if (response != "success") {
-        LOG(ERROR) << "Failed waiting to delete device " << control_device;
+        LOG(ERROR) << "Failed waiting to delete device " << control_device << " received:'"
+                   << response << "'";
         return false;
     }
     return true;
@@ -206,6 +207,15 @@ bool SnapuserdClient::SupportsSecondStageSocketHandoff() {
     return response == "success";
 }
 
+bool SnapuserdClient::SupportsUblk() {
+    std::string msg = "supports,ublk";
+    if (!Sendmsg(msg)) {
+        LOG(ERROR) << "Failed to send message " << msg << " to snapuserd";
+    }
+    std::string response = Receivemsg();
+    return response == "success";
+}
+
 std::string SnapuserdClient::Receivemsg() {
     char msg[PACKET_SIZE];
     ssize_t ret = TEMP_FAILURE_RETRY(recv(sockfd_, msg, sizeof(msg), 0));
@@ -214,7 +224,7 @@ std::string SnapuserdClient::Receivemsg() {
         return {};
     }
     if (ret == 0) {
-        LOG(DEBUG) << "Snapuserd:client disconnected";
+        LOG(INFO) << "Snapuserd:client disconnected";
         return {};
     }
     return std::string(msg, ret);
@@ -282,6 +292,28 @@ uint64_t SnapuserdClient::InitDmUserCow(const std::string& misc_name, const std:
         return 0;
     }
     return num_sectors;
+}
+
+uint64_t SnapuserdClient::CreateUserSnapshot(const std::string& misc_name, uint64_t num_sectors) {
+    LOG(INFO) << "misc_name: " << misc_name << " num_sectors: " << num_sectors;
+    // TODOUBLK: b/414812023 : Either send explicit command to server or handle the creation in
+    // addHandler() in that case, this poke is not needed.
+    return 0;
+}
+
+std::optional<std::string> SnapuserdClient::GetDeviceName(const std::string& misc_name) {
+    std::string msg = "get_device_name," + misc_name;
+    if (!Sendmsg(msg)) {
+        LOG(ERROR) << "Failed to send message " << msg << " to snapuserd daemon";
+        return std::nullopt;
+    }
+    std::string str = Receivemsg();
+    std::vector<std::string> input = android::base::Split(str, ",");
+    if (input.empty() || input[0] != "success") {
+        LOG(ERROR) << "Failed to receive device name for " << msg << " from snapuserd daemon";
+        return std::nullopt;
+    }
+    return input[1];
 }
 
 bool SnapuserdClient::DetachSnapuserd() {

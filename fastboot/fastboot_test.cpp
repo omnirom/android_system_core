@@ -16,8 +16,17 @@
 
 #include "fastboot.h"
 
+#include <fcntl.h>
+
+#include <android-base/file.h>
 #include <android-base/logging.h>
 #include <gtest/gtest.h>
+
+#include "fastboot_driver_mock.h"
+#include "fastboot_test.h"
+
+using namespace fastboot;
+using ::testing::NiceMock;
 
 TEST(FastBoot, ParseOsPatchLevel) {
     FastBootTool fb;
@@ -249,6 +258,63 @@ TEST(FastBoot, ParseNetworkSerial) {
 
     ParseNetworkSerialNegativeTest("wrong port", "tcp:192.168.1.0:-1",
                                    FastbootError::Type::NETWORK_SERIAL_WRONG_ADDRESS);
+}
+
+class FlashingTest : public ::testing::Test {
+  protected:
+    virtual void SetUp() override {
+        fp_.fb = &fb_;
+        fp_.source = std::make_unique<TestImageSource>();
+    }
+
+    FlashingPlan fp_;
+    NiceMock<MockFastbootDriver> fb_;
+};
+
+TEST_F(FlashingTest, FlashUnalignedChunk) {
+    fp_.sparse_limit = 4096;
+
+    TemporaryFile tmp;
+    ASSERT_GE(tmp.fd, 0);
+
+    std::string zeroes(4608, '\0');
+    ASSERT_TRUE(android::base::WriteStringToFile(zeroes, tmp.path));
+
+    do_flash("test", tmp.path, false, &fp_);
+}
+
+TEST_F(FlashingTest, FlashUnsupportedUnalignedChunk) {
+    TemporaryFile tmp;
+    ASSERT_GE(tmp.fd, 0);
+
+    std::string zeroes(4609, '\0');
+    ASSERT_TRUE(android::base::WriteStringToFile(zeroes, tmp.path));
+
+    std::vector<SparsePtr> out;
+    ASSERT_FALSE(split_file(tmp.fd, 4096, &out));
+}
+
+TEST_F(FlashingTest, Bug432012986) {
+    constexpr size_t kBlockSize = 4096;
+    SparsePtr s(sparse_file_new(kBlockSize, kBlockSize * 4), sparse_file_destroy);
+
+    // Create a sparse file that when encoded is not 512-byte aligned.
+    unique_fd urandom(open("/dev/urandom", O_RDONLY));
+    std::string data(kBlockSize, '\0');
+    ASSERT_TRUE(android::base::ReadFully(urandom, data.data(), data.size()));
+    ASSERT_EQ(sparse_file_add_data(s.get(), data.data(), data.size(), 0), 0);
+    ASSERT_EQ(sparse_file_add_data(s.get(), data.data(), data.size(), 1), 0);
+    ASSERT_EQ(sparse_file_add_data(s.get(), data.data(), data.size(), 2), 0);
+    ASSERT_EQ(sparse_file_add_fill(s.get(), 0, kBlockSize, 3), 0);
+
+    TemporaryFile tmp;
+    ASSERT_GE(tmp.fd, 0);
+    ASSERT_EQ(sparse_file_write(s.get(), tmp.fd, false, true, false), 0);
+
+    // Set limit to 2 sparse blocks, since resparse will infinite loop if asked
+    // to split 1 block.
+    fp_.sparse_limit = kBlockSize * 2;
+    do_flash("test", tmp.path, false, &fp_);
 }
 
 int main(int argc, char* argv[]) {

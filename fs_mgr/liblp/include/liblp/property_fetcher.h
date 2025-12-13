@@ -28,7 +28,7 @@ class IPropertyFetcher {
     virtual bool GetBoolProperty(const std::string& key, bool defaultValue) = 0;
 
     static IPropertyFetcher* GetInstance();
-    static void OverrideForTesting(std::unique_ptr<IPropertyFetcher>&&);
+    static void OverrideForTesting(std::shared_ptr<IPropertyFetcher>&&);
 };
 
 class PropertyFetcher : public IPropertyFetcher {

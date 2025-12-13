@@ -33,8 +33,8 @@
 
 using android::base::unique_fd;
 
-static void TestCreateRegion(size_t size, unique_fd &fd, int prot) {
-    fd = unique_fd(ashmem_create_region(nullptr, size));
+static void TestCreateRegion(size_t size, unique_fd &fd, int prot, const char *name=nullptr) {
+    fd = unique_fd(ashmem_create_region(name, size));
     ASSERT_TRUE(fd >= 0);
     ASSERT_TRUE(ashmem_valid(fd));
     ASSERT_EQ(size, static_cast<size_t>(ashmem_get_size_region(fd)));
@@ -269,6 +269,19 @@ static void ForkMultiRegionTest(unique_fd fds[], int nRegions, size_t size) {
 
 }
 
+static void GetNameAshmemTest(const std::string &name) {
+    // We use __ashmem_open() to guarantee we get an ashmem fd. We need to do this since ashmem and
+    // memfd have different maximum name lengths.
+    unique_fd fd(__ashmem_open());
+    ASSERT_TRUE(fd >= 0);
+
+    ASSERT_EQ(0, ioctl(fd, ASHMEM_SET_NAME, name.c_str()));
+
+    char retName[ASHMEM_NAME_LEN];
+    ASSERT_EQ(0, ioctl(fd, ASHMEM_GET_NAME, retName));
+    ASSERT_STREQ(retName, name.substr(0, ASHMEM_NAME_LEN - 1).c_str());
+}
+
 TEST(AshmemTest, ForkTest) {
     const size_t size = getpagesize();
     unique_fd fd;
@@ -319,6 +332,50 @@ TEST(AshmemTest, ForkMultiRegionTest) {
     ASSERT_NO_FATAL_FAILURE(ForkMultiRegionTest(fds, nRegions, size));
 }
 
+// We don't run a similar test as part of the AshmemTestMemfdAshmemCompat tests, since the SET_NAME
+// ioctl is not supported.
+TEST(AshmemTest, SetNameKernelAccessTest) {
+    size_t pageSize = getpagesize();
+    // We use mmap to get a page-aligned area, since the smallest accessibility granule is a page.
+    // We also allocate 2 pages worth of virtual address space so that when we unmap the 2nd page
+    // we can be sure we've created a hole in the process' address space.
+    void *testArea = mmap(nullptr, 2 * pageSize, PROT_READ | PROT_WRITE,
+                          MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    ASSERT_NE(testArea, MAP_FAILED);
+
+    // Create a hole in the address space to catch accesses beyond the string from the kernel, which
+    // would cause TestCreateRegion() to fail.
+    char *secondPage = static_cast<char *>(testArea) + pageSize;
+    ASSERT_EQ(0, munmap(secondPage, pageSize));
+
+    // Write the name such that even if the implementation of the SET_NAME ioctl is always reading
+    // ASHMEM_NAME_LEN bytes, it is guaranteed to succeed given the start address of "test-buf".
+    char *name = secondPage - ASHMEM_NAME_LEN;
+    strcpy(name, "test-buf");
+
+    unique_fd fd;
+    ASSERT_NO_FATAL_FAILURE(TestCreateRegion(pageSize, fd, PROT_READ | PROT_WRITE, name));
+
+    unique_fd fd2;
+    // This should not fail either, as "est-buf" is also a valid string, but a broken
+    // implementation of the SET_NAME ioctl can blindly read ASHMEM_NAME_LEN bytes each time,
+    // instead of searching for the NUL terminating byte.
+    //
+    // If it fails, it's because the kernel accessed the unmapped region.
+    ASSERT_NO_FATAL_FAILURE(TestCreateRegion(pageSize, fd2, PROT_READ | PROT_WRITE, &name[1]));
+
+    ASSERT_EQ(0, munmap(testArea, pageSize));
+}
+
+TEST(AshmemTest, GetLongNameAshmemTests) {
+    std::string longName(ASHMEM_NAME_LEN - 1, 'A');
+    ASSERT_NO_FATAL_FAILURE(GetNameAshmemTest(longName));
+
+    longName.append(1, 'A');
+    // This should not fail because ashmem will just truncate the name if it is too long.
+    ASSERT_NO_FATAL_FAILURE(GetNameAshmemTest(longName));
+}
+
 class AshmemTestMemfdAshmemCompat : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -346,6 +403,26 @@ TEST_F(AshmemTestMemfdAshmemCompat, GetNameTest) {
     ASSERT_EQ(0, ioctl(fd, ASHMEM_GET_NAME, &testBuf));
     // ashmem_create_region(nullptr, ...) creates memfds with the name "none".
     ASSERT_STREQ(testBuf, "none");
+}
+
+TEST_F(AshmemTestMemfdAshmemCompat, GetLongNameMemfdTests) {
+    // memfd names have a maximum length of 249 bytes excluding the NUL terminating byte.
+    // See: https://man7.org/linux/man-pages/man2/memfd_create.2.html
+    const size_t max_memfd_name_len = 249;
+    std::string longName(max_memfd_name_len, 'A');
+    size_t pageSize = getpagesize();
+    unique_fd fd;
+    ASSERT_NO_FATAL_FAILURE(TestCreateRegion(pageSize, fd, PROT_READ | PROT_WRITE | PROT_EXEC,
+                                             longName.c_str()));
+
+    char retName[max_memfd_name_len + 1];
+    ASSERT_EQ(0, ioctl(fd, ASHMEM_GET_NAME, retName));
+    ASSERT_STREQ(retName, longName.c_str());
+
+    longName.append(1, 'A');
+    // Use ashmem_create_region() since it should fail, since the string is now over the maximum
+    // length.
+    ASSERT_LT(ashmem_create_region(longName.c_str(), pageSize), 0);
 }
 
 TEST_F(AshmemTestMemfdAshmemCompat, SetSizeTest) {

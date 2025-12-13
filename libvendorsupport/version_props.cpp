@@ -52,4 +52,24 @@ int AVendorSupport_getVendorApiLevel() {
     }
     return android::base::GetIntProperty("ro.board.api_level", 0);
 }
+
+int AVendorSupport_getFirstVendorApiLevel() {
+    // `ro.board.first_api_level` is only populated for GRF chipsets.
+    // Its numbering scheme is 30, 31, 32, 33, 34, 202404, 202504, etc. so there
+    // is no need for conversion using `AVendorSupport_getVendorApiLevelOf`.
+    int board_first_api_level = android::base::GetIntProperty("ro.board.first_api_level", -1);
+    if (board_first_api_level != -1) {
+        return board_first_api_level;
+    }
+
+    // `ro.product.first_api_level` is always populated.
+    // Its numbering scheme is 30, 31, 32, 33, 34, 35, 36... so it must be converted
+    // using `AVendorSupport_getVendorApiLevelOf`.
+    int product_first_api_level = android::base::GetIntProperty("ro.product.first_api_level", -1);
+    if (product_first_api_level == -1) {
+        ALOGE("Could not find ro.product.first_api_level");
+        return __INVALID_API_LEVEL;
+    }
+    return AVendorSupport_getVendorApiLevelOf(product_first_api_level);
+}
 #endif  // __ANDROID_VENDOR__

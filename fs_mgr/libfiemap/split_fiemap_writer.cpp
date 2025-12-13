@@ -28,6 +28,7 @@
 
 #include <android-base/file.h>
 #include <android-base/logging.h>
+#include <android-base/scopeguard.h>
 #include <android-base/stringprintf.h>
 #include <android-base/strings.h>
 #include <android-base/unique_fd.h>
@@ -41,6 +42,26 @@ using android::base::unique_fd;
 
 // We use a four-digit suffix at the end of filenames.
 static const size_t kMaxFilePieces = 500;
+
+// Helper to write a list of filenames for split file list.
+static FiemapStatus WriteSplitFileList(const std::string& out_file,
+                                       const std::vector<std::string>& files) {
+    unique_fd fd(open(out_file.c_str(), O_CREAT | O_TRUNC | O_WRONLY | O_CLOEXEC, 0660));
+    if (fd < 0) {
+        PLOG(ERROR) << "Failed to open " << out_file;
+        return FiemapStatus::FromErrno(errno);
+    }
+
+    for (const auto& file_path : files) {
+        std::string line = android::base::Basename(file_path) + "\n";
+        if (!android::base::WriteStringToFd(line, fd)) {
+            PLOG(ERROR) << "Write failed " << out_file;
+            return FiemapStatus::FromErrno(errno);
+        }
+    }
+    fsync(fd.get());
+    return FiemapStatus::Ok();
+}
 
 std::unique_ptr<SplitFiemap> SplitFiemap::Create(const std::string& file_path, uint64_t file_size,
                                                  uint64_t max_piece_size,
@@ -121,22 +142,15 @@ FiemapStatus SplitFiemap::Create(const std::string& file_path, uint64_t file_siz
     }
 
     // Create the split file list.
-    unique_fd fd(open(out->list_file_.c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0660));
-    if (fd < 0) {
-        PLOG(ERROR) << "Failed to open " << file_path;
+    std::vector<std::string> split_file_paths;
+    split_file_paths.reserve(out->files_.size());
+    for (const auto& file : out->files_) {
+        split_file_paths.emplace_back(file->file_path());
+    }
+    if (auto status = WriteSplitFileList(file_path, split_file_paths); !status.is_ok()) {
         out.reset();
-        return FiemapStatus::FromErrno(errno);
+        return status;
     }
-
-    for (const auto& writer : out->files_) {
-        std::string line = android::base::Basename(writer->file_path()) + "\n";
-        if (!android::base::WriteFully(fd, line.data(), line.size())) {
-            PLOG(ERROR) << "Write failed " << file_path;
-            out.reset();
-            return FiemapStatus::FromErrno(errno);
-        }
-    }
-    fsync(fd.get());
 
     // Unset this bit, so we don't unlink on destruction.
     out->creating_ = false;
@@ -292,6 +306,78 @@ bool SplitFiemap::Flush() {
             return false;
         }
     }
+    return true;
+}
+
+bool SplitFiemap::Grow(uint64_t bytes, uint64_t max_piece_size) {
+    std::string temp_list_file = list_file_ + ".tmp";
+
+    if (!max_piece_size) {
+        // use temp file to determine the maximum file size because DetermineMaximumFileSize()
+        // truncates the file if it already exists.
+        auto status = DetermineMaximumFileSize(temp_list_file, &max_piece_size);
+        if (!status.is_ok()) {
+            LOG(ERROR) << "Could not determine maximum file size for " << temp_list_file;
+            return false;
+        }
+    }
+
+    // Create the split files. New files won't be added to the SplitFiemap instance until all files
+    // are created and the split file list is updated.
+    std::vector<FiemapUniquePtr> new_files;
+    // On error, unlink new files
+    auto guard = base::make_scope_guard([&]() {
+        for (const auto& file : new_files) {
+            unlink(file->file_path().c_str());
+        }
+    });
+
+    uint64_t remaining_bytes = bytes;
+    while (remaining_bytes) {
+        auto files_size = files_.size() + new_files.size();
+        if (files_size >= kMaxFilePieces) {
+            LOG(ERROR) << "Requested size " << (total_size_ + bytes)
+                       << " created too many split files";
+            return false;
+        }
+        std::string chunk_path =
+                android::base::StringPrintf("%s.%04d", list_file_.c_str(), (int)files_size);
+        uint64_t chunk_size = std::min(max_piece_size, remaining_bytes);
+        FiemapUniquePtr writer;
+        auto status = FiemapWriter::Open(chunk_path, chunk_size, &writer, true);
+        if (!status.is_ok()) {
+            return false;
+        }
+
+        // writer->size() is block size aligned and could be bigger than remaining_bytes
+        // If remaining_bytes is bigger, set remaining_bytes to 0 to avoid underflow error.
+        remaining_bytes = remaining_bytes > writer->size() ? (remaining_bytes - writer->size()) : 0;
+        new_files.push_back(std::move(writer));
+    }
+
+    // Update list file by appending new files at the end
+    std::vector<std::string> split_file_paths;
+    for (const auto& file : files_) {
+        split_file_paths.emplace_back(file->file_path());
+    }
+    for (const auto& file : new_files) {
+        split_file_paths.emplace_back(file->file_path());
+    }
+    // Write the list file to a temp first and then rename it for safer/atomic write.
+    if (auto status = WriteSplitFileList(temp_list_file, split_file_paths); !status.is_ok()) {
+        return false;
+    }
+    if (rename(temp_list_file.c_str(), list_file_.c_str())) {
+        PLOG(ERROR) << "Failed to rename " << temp_list_file << " to " << list_file_;
+        return false;
+    }
+
+    // Commit the changes to the SplitFiemap instance
+    guard.Disable();
+    for (auto&& file : new_files) {
+        AddFile(std::move(file));
+    }
+    extents_.clear();  // will be populated later on demand in extents()
     return true;
 }
 

@@ -94,8 +94,6 @@ class ScopedUseFallbackAllocator {
 };
 
 static void debuggerd_fallback_trace(int output_fd, ucontext_t* ucontext) {
-  std::unique_ptr<unwindstack::Regs> regs;
-
   ThreadInfo thread;
   thread.pid = getpid();
   thread.tid = gettid();

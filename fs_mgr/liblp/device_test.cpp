@@ -56,24 +56,7 @@ TEST_F(DeviceTest, BlockDeviceInfo) {
 TEST_F(DeviceTest, ReadSuperPartitionCurrentSlot) {
     auto slot_suffix = fs_mgr_get_slot_suffix();
     auto slot_number = SlotNumberForSlotSuffix(slot_suffix);
-    auto super_name = fs_mgr_get_super_partition_name(slot_number);
+    auto super_name = fs_mgr_get_super_partition_name();
     auto metadata = ReadMetadata(super_name, slot_number);
     EXPECT_NE(metadata, nullptr);
-}
-
-TEST_F(DeviceTest, ReadSuperPartitionOtherSlot) {
-    auto other_slot_suffix = fs_mgr_get_other_slot_suffix();
-    if (other_slot_suffix.empty()) {
-        GTEST_SKIP() << "No other slot, skipping";
-    }
-    if (IPropertyFetcher::GetInstance()->GetBoolProperty("ro.boot.dynamic_partitions_retrofit",
-                                                         false)) {
-        GTEST_SKIP() << "Device with retrofit dynamic partition may not have metadata at other "
-                     << "slot, skipping";
-    }
-
-    auto other_slot_number = SlotNumberForSlotSuffix(other_slot_suffix);
-    auto other_super_name = fs_mgr_get_super_partition_name(other_slot_number);
-    auto other_metadata = ReadMetadata(other_super_name, other_slot_number);
-    EXPECT_NE(other_metadata, nullptr);
 }

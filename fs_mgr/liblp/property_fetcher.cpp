@@ -31,8 +31,8 @@ bool PropertyFetcher::GetBoolProperty(const std::string& key, bool default_value
     return android::base::GetBoolProperty(key, default_value);
 }
 
-static std::unique_ptr<IPropertyFetcher>* GetInstanceAllocation() {
-    static std::unique_ptr<IPropertyFetcher> instance = std::make_unique<PropertyFetcher>();
+static std::shared_ptr<IPropertyFetcher>* GetInstanceAllocation() {
+    static std::shared_ptr<IPropertyFetcher> instance = std::make_shared<PropertyFetcher>();
     return &instance;
 }
 
@@ -40,7 +40,7 @@ IPropertyFetcher* IPropertyFetcher::GetInstance() {
     return GetInstanceAllocation()->get();
 }
 
-void IPropertyFetcher::OverrideForTesting(std::unique_ptr<IPropertyFetcher>&& fetcher) {
+void IPropertyFetcher::OverrideForTesting(std::shared_ptr<IPropertyFetcher>&& fetcher) {
     GetInstanceAllocation()->swap(fetcher);
     fetcher.reset();
 }

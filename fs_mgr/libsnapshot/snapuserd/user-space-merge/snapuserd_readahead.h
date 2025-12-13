@@ -99,6 +99,7 @@ class ReadAhead {
 
     uint64_t total_ra_blocks_completed_ = 0;
     bool read_ahead_async_ = false;
+
     // Queue depth of 8 seems optimal. We don't want
     // to have a huge depth as it may put more memory pressure
     // on the kernel worker threads given that we use

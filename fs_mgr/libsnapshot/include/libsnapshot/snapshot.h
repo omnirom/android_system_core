@@ -107,7 +107,7 @@ class ISnapshotManager {
         virtual std::string GetMetadataDir() const = 0;
         virtual std::string GetSlotSuffix() const = 0;
         virtual std::string GetOtherSlotSuffix() const = 0;
-        virtual std::string GetSuperDevice(uint32_t slot) const = 0;
+        virtual std::string GetSuperDevice() const = 0;
         virtual const android::fs_mgr::IPartitionOpener& GetPartitionOpener() const = 0;
         virtual bool IsOverlayfsSetup() const = 0;
         virtual bool SetBootControlMergeStatus(MergeStatus status) = 0;
@@ -204,9 +204,9 @@ class ISnapshotManager {
     //   Other: 0
     virtual UpdateState GetUpdateState(double* progress = nullptr) = 0;
 
-    // Returns true if compression is enabled for the current update. This always returns false if
+    // Returns true if snapuserd is used for the current update. This always returns false if
     // UpdateState is None, or no snapshots have been created.
-    virtual bool UpdateUsesCompression() = 0;
+    virtual bool UpdateUsesSnapuserd() = 0;
 
     // Returns true if userspace snapshots is enabled for the current update.
     virtual bool UpdateUsesUserSnapshots() = 0;
@@ -379,7 +379,7 @@ class SnapshotManager final : public ISnapshotManager {
     UpdateState ProcessUpdateState(const std::function<bool()>& callback = {},
                                    const std::function<bool()>& before_cancel = {}) override;
     UpdateState GetUpdateState(double* progress = nullptr) override;
-    bool UpdateUsesCompression() override;
+    bool UpdateUsesSnapuserd() override;
     bool UpdateUsesUserSnapshots() override;
     Return CreateUpdateSnapshots(const DeltaArchiveManifest& manifest) override;
     bool MapUpdateSnapshot(const CreateLogicalPartitionParams& params,
@@ -432,11 +432,9 @@ class SnapshotManager final : public ISnapshotManager {
     // Resume the snapshot merge.
     bool ResumeSnapshotMerge();
 
-    enum class SnapshotDriver {
-        DM_SNAPSHOT,
-        DM_USER,
-    };
+    enum class SnapshotDriver { DM_SNAPSHOT, DM_USER, UBLK };
 
+    bool UpdateUsesUblk();
     // Add new public entries above this line.
 
   private:
@@ -470,6 +468,7 @@ class SnapshotManager final : public ISnapshotManager {
     FRIEND_TEST(SnapshotUpdateTest, InterruptMergeDuringPhaseUpdate);
     FRIEND_TEST(SnapshotUpdateTest, MapAllSnapshotsWithoutSlotSwitch);
     FRIEND_TEST(SnapshotUpdateTest, CancelInRecovery);
+    FRIEND_TEST(SnapshotUpdateTest, MergeRespectsSourceUblkDisabled);
     friend class SnapshotTest;
     friend class SnapshotUpdateTest;
     friend class FlashAfterUpdateTest;
@@ -550,11 +549,40 @@ class SnapshotManager final : public ISnapshotManager {
     bool MapSnapshot(LockedFile* lock, const std::string& name, const std::string& base_device,
                      const std::string& cow_device, const std::chrono::milliseconds& timeout_ms,
                      std::string* dev_path);
+    bool MapUserspaceCowDmUser(const std::string& name, const std::string& misc_name,
+                               const std::string& cow_file, const std::string& base_device,
+                               const std::string& base_path_merge, uint64_t base_sectors,
+                               const std::chrono::milliseconds& timeout_ms,
+                               std::string* out_final_path);
+    bool MapUserspaceCowUblk(const std::string& name, const std::string& misc_name,
+                             const std::string& cow_file, const std::string& base_device,
+                             const std::string& base_path_merge, uint64_t base_sectors,
+                             const std::chrono::milliseconds& timeout_ms,
+                             std::string* out_final_path);
+    bool CalculateBaseSectorsForUserspaceCow(const std::string& cow_file,
+                                             const std::string& base_path_merge,
+                                             uint64_t& out_base_sectors);
+    bool HandleDmUserDeviceCreation(const std::string& name, const std::string& misc_name,
+                                    uint64_t base_sectors,
+                                    const std::chrono::milliseconds& timeout_ms,
+                                    std::string* out_final_path);
+    bool HandleUblkDeviceCreation(const std::string& misc_name, uint64_t base_sectors,
+                                  const std::chrono::milliseconds& timeout_ms);
+    bool EnsureUblkPrerequisites(const std::chrono::milliseconds& timeout_ms);
+    std::optional<std::string> GetVerifiedUblkPath(const std::string& misc_name);
+    bool EnsureDmLinearOverUblk(const std::string& dm_device_name,
+                                const std::optional<std::string>& ublk_bdev_path_opt,
+                                uint64_t base_sectors, const std::chrono::milliseconds& timeout_ms);
+    bool VerifyUblkDeviceReady(const std::string& misc_name);
+    bool SetupDmLinearOverUblk(const std::string& snapshot_dm_name, uint64_t base_sectors,
+                               const std::string& ublk_bdev_path,
+                               const std::chrono::milliseconds& timeout_ms,
+                               std::string* out_final_dm_path);
 
-    // Create a dm-user device for a given snapshot.
-    bool MapDmUserCow(LockedFile* lock, const std::string& name, const std::string& cow_file,
-                      const std::string& base_device, const std::string& base_path_merge,
-                      const std::chrono::milliseconds& timeout_ms, std::string* path);
+    // Create a snapshot block device for a given snapshot (cow).
+    bool MapUserspaceCow(LockedFile* lock, const std::string& name, const std::string& cow_file,
+                         const std::string& base_device, const std::string& base_path_merge,
+                         const std::chrono::milliseconds& timeout_ms, std::string* path);
 
     // Map the source device used for dm-user.
     bool MapSourceDevice(LockedFile* lock, const std::string& name,
@@ -847,14 +875,18 @@ class SnapshotManager final : public ISnapshotManager {
 
     SnapuserdClient* snapuserd_client() const { return snapuserd_client_.get(); }
 
-    // Helper of UpdateUsesCompression
-    bool UpdateUsesCompression(LockedFile* lock);
+    // Helper of UpdateUsesSnapuserd
+    bool UpdateUsesSnapuserd(LockedFile* lock);
+
     // Locked and unlocked functions to test whether the current update uses
     // userspace snapshots.
     bool UpdateUsesUserSnapshots(LockedFile* lock);
 
     // Check if io_uring API's need to be used
     bool UpdateUsesIouring(LockedFile* lock);
+
+    // Check if we need to use Ublk
+    bool UpdateUsesUblk(LockedFile* lock);
 
     // Check if direct reads are enabled for the source image
     bool UpdateUsesODirect(LockedFile* lock);
@@ -884,6 +916,9 @@ class SnapshotManager final : public ISnapshotManager {
     // Returns true post OTA reboot if legacy snapuserd is required
     bool IsLegacySnapuserdPostReboot();
 
+    // Returns true if dm_name device has ublk device as parent
+    bool IsParentUblkDevice(const std::string& dm_name);
+
     android::dm::IDeviceMapper& dm_;
     std::unique_ptr<IDeviceInfo> device_;
     std::string metadata_dir_;
@@ -893,6 +928,7 @@ class SnapshotManager final : public ISnapshotManager {
     std::unique_ptr<SnapuserdClient> snapuserd_client_;
     std::unique_ptr<LpMetadata> old_partition_metadata_;
     std::optional<bool> is_snapshot_userspace_;
+    std::optional<bool> is_snapshot_ublk_;
     std::optional<bool> is_legacy_snapuserd_;
 };
 

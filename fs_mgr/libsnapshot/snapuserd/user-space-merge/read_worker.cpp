@@ -18,6 +18,7 @@
 
 #include <libsnapshot/cow_format.h>
 #include <pthread.h>
+#include <sys/prctl.h>
 
 #include "read_worker.h"
 #include "snapuserd_core.h"
@@ -247,8 +248,8 @@ bool ReadWorker::Init() {
             ssize_t page_size = getpagesize();
             if (posix_memalign(&aligned_addr, page_size, page_size) < 0) {
                 direct_read_ = false;
-                SNAP_PLOG(ERROR) << "posix_memalign failed "
-                                 << " page_size: " << page_size << " read_sz: " << page_size;
+                SNAP_PLOG(ERROR) << "posix_memalign failed " << " page_size: " << page_size
+                                 << " read_sz: " << page_size;
             } else {
                 aligned_buffer_.reset(aligned_addr);
             }
@@ -266,7 +267,9 @@ bool ReadWorker::Init() {
 bool ReadWorker::Run() {
     SNAP_LOG(INFO) << "Processing snapshot I/O requests....";
 
-    pthread_setname_np(pthread_self(), "ReadWorker");
+    std::string thread_name = "ReadWorker_" + misc_name_;
+    prctl(PR_SET_NAME, thread_name.c_str());
+
     auto worker_thread_priority = android::base::GetUintProperty<uint32_t>(
             "ro.virtual_ab.worker_thread_priority", ANDROID_PRIORITY_NORMAL);
 

@@ -238,7 +238,8 @@ runs the service.
   _fatal crash window mins_ minutes or before boot completes, the device
   will reboot into _fatal reboot target_.
   The default value of _fatal crash window mins_ is 4, and default value
-  of _fatal reboot target_ is 'bootloader'.
+  of _fatal reboot target_ is 'bootloader'. Setting _fatal crash window mins_ to
+  special value `off` cancels the critical nature of the service.
   For tests, the fatal reboot can be skipped by setting property
   `init.svc_debug.no_fatal.<service-name>` to `true` for specified critical service.
 
@@ -716,12 +717,11 @@ provides the `aidl_lazy_test_1` interface.
   _options_ include "barrier=1", "noauto\_da\_alloc", "discard", ... as
   a comma separated string, e.g. barrier=1,noauto\_da\_alloc
 
-`perform_apex_config [--bootstrap]`
+`perform_apex_config`
 > Performs tasks after APEXes are mounted. For example, creates data directories
   for the mounted APEXes, parses config file(s) from them, and updates linker
   configurations. Intended to be used only once when apexd notifies the mount
   event by setting `apexd.status` to ready.
-  Use --bootstrap when invoking in the bootstrap mount namespace.
 
 `restart [--only-if-running] <service>`
 > Stops and restarts a running service, does nothing if the service is currently

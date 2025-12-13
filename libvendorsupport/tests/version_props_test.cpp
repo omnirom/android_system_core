@@ -24,12 +24,20 @@ namespace {
 TEST(VendorSupport, GetCorrespondingVendorApiLevel) {
     ASSERT_EQ(__ANDROID_API_U__, AVendorSupport_getVendorApiLevelOf(__ANDROID_API_U__));
     ASSERT_EQ(202404, AVendorSupport_getVendorApiLevelOf(__ANDROID_API_V__));
+    // No more __ANDROID_API_FOO__ constants are defined after V since numeric API levels
+    // are preferred, so add more tests (to make the helper function behaviour crystal
+    // clear) using numeric API levels.
+    ASSERT_EQ(202504, AVendorSupport_getVendorApiLevelOf(36));
     ASSERT_EQ(__INVALID_API_LEVEL, AVendorSupport_getVendorApiLevelOf(__ANDROID_API_FUTURE__));
 }
 
 TEST(VendorSupport, GetCorrespondingSdkApiLevel) {
     ASSERT_EQ(__ANDROID_API_U__, AVendorSupport_getSdkApiLevelOf(__ANDROID_API_U__));
     ASSERT_EQ(__ANDROID_API_V__, AVendorSupport_getSdkApiLevelOf(202404));
+    // No more __ANDROID_API_FOO__ constants are defined after V since numeric API levels
+    // are preferred, so add more tests (to make the helper function behaviour crystal
+    // clear) using numeric API levels.
+    ASSERT_EQ(36, AVendorSupport_getSdkApiLevelOf(202504));
     ASSERT_EQ(__INVALID_API_LEVEL, AVendorSupport_getSdkApiLevelOf(__ANDROID_VENDOR_API_MAX__));
     ASSERT_EQ(__INVALID_API_LEVEL, AVendorSupport_getSdkApiLevelOf(35));
 }

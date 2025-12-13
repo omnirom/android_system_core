@@ -144,23 +144,6 @@ Result<void> SetMmapRndBitsAction(const BuiltinArguments&) {
     return Error();
 }
 
-#define KPTR_RESTRICT_PATH "/proc/sys/kernel/kptr_restrict"
-#define KPTR_RESTRICT_MINVALUE 2
-#define KPTR_RESTRICT_MAXVALUE 4
-
-// Set kptr_restrict to the highest available level.
-//
-// Aborts if unable to set this to an acceptable value.
-Result<void> SetKptrRestrictAction(const BuiltinArguments&) {
-    std::string path = KPTR_RESTRICT_PATH;
-
-    if (!SetHighestAvailableOptionValue(path, KPTR_RESTRICT_MINVALUE, KPTR_RESTRICT_MAXVALUE)) {
-        LOG(FATAL) << "Unable to set adequate kptr_restrict value!";
-        return Error();
-    }
-    return {};
-}
-
 // Test for whether the kernel has SELinux hooks for the perf_event_open()
 // syscall. If the hooks are present, we can stop using the other permission
 // mechanism (perf_event_paranoid sysctl), and use only the SELinux policy to

@@ -116,7 +116,7 @@ std::unique_ptr<AutoDevice> SnapshotManagerStub::EnsureMetadataMounted() {
     return nullptr;
 }
 
-bool SnapshotManagerStub::UpdateUsesCompression() {
+bool SnapshotManagerStub::UpdateUsesSnapuserd() {
     LOG(ERROR) << __FUNCTION__ << " should never be called.";
     return false;
 }

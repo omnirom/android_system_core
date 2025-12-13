@@ -19,6 +19,7 @@ package {
 cc_binary {
     name: "trusty-coverage-controller",
     vendor: true,
+    init_rc: ["trusty-coverage-controller.rc"],
 
     srcs: ["controller.cpp"],
     shared_libs: [

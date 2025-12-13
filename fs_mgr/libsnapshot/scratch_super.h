@@ -28,6 +28,7 @@ std::string GetScratchOtaMetadataPartition();
 std::string MapScratchOtaMetadataPartition(const std::string& device);
 bool CreateScratchOtaMetadataOnSuper(const ISnapshotManager::IDeviceInfo* info = nullptr);
 bool CleanupScratchOtaMetadataIfPresent(const ISnapshotManager::IDeviceInfo* info = nullptr);
+bool UmountScratch(const bool cleanup_ota_dir);
 
 }  // namespace snapshot
 }  // namespace android

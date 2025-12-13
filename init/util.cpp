@@ -31,6 +31,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <format>
 #include <map>
 #include <thread>
 
@@ -689,7 +690,7 @@ bool Has32BitAbi() {
 }
 
 std::string GetApexNameFromFileName(const std::string& path) {
-    static const std::string kApexDir = "/apex/";
+    [[clang::no_destroy]] static const std::string kApexDir = "/apex/";
     if (StartsWith(path, kApexDir)) {
         auto begin = kApexDir.size();
         auto end = path.find('/', begin);
@@ -839,6 +840,20 @@ bool ForkExecveAndWaitForCompletion(const char* filename, char* const argv[]) {
 
         return false;
     }
+}
+
+std::string SignalName(int signum) {
+#if defined(__BIONIC__)
+    char str[SIG2STR_MAX];
+    if (sig2str(signum, str) == 0) {
+        return "SIG" + std::string(str);
+    }
+    return std::format("invalid signal ({})", signum);
+#else
+    // sig2str is missing in many platforms including glibc. glibc has sigabbrev_np instead, but it
+    // doesn't seem available in our repo.
+    return std::format("signal {}", signum);
+#endif
 }
 
 }  // namespace init

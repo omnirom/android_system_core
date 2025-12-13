@@ -28,7 +28,6 @@
 #include <android-base/parseint.h>
 #include <android-base/strings.h>
 #include <android-base/unique_fd.h>
-#include <brotli/encode.h>
 #include <libsnapshot/cow_compress.h>
 #include <libsnapshot/cow_format.h>
 #include <libsnapshot/cow_reader.h>
@@ -43,8 +42,6 @@ namespace snapshot {
 std::optional<CowCompressionAlgorithm> CompressionAlgorithmFromString(std::string_view name) {
     if (name == "gz") {
         return {kCowCompressGz};
-    } else if (name == "brotli") {
-        return {kCowCompressBrotli};
     } else if (name == "lz4") {
         return {kCowCompressLz4};
     } else if (name == "zstd") {
@@ -62,10 +59,11 @@ std::unique_ptr<ICompressor> ICompressor::Create(CowCompression compression,
     switch (compression.algorithm) {
         case kCowCompressLz4:
             return ICompressor::Lz4(compression.compression_level, block_size);
-        case kCowCompressBrotli:
-            return ICompressor::Brotli(compression.compression_level, block_size);
         case kCowCompressGz:
             return ICompressor::Gz(compression.compression_level, block_size);
+        case kCowCompressBrotliUnsupported:
+            LOG(ERROR) << "cannot create a brotli compressor since it is deprecated";
+            return nullptr;
         case kCowCompressZstd:
             return ICompressor::Zstd(compression.compression_level, block_size);
         case kCowCompressNone:
@@ -84,8 +82,8 @@ uint32_t CompressWorker::GetDefaultCompressionLevel(CowCompressionAlgorithm comp
         case kCowCompressGz: {
             return Z_BEST_COMPRESSION;
         }
-        case kCowCompressBrotli: {
-            return BROTLI_DEFAULT_QUALITY;
+        case kCowCompressBrotliUnsupported: {
+            break;
         }
         case kCowCompressLz4: {
             break;
@@ -103,7 +101,7 @@ uint32_t CompressWorker::GetDefaultCompressionLevel(CowCompressionAlgorithm comp
 class GzCompressor final : public ICompressor {
   public:
     GzCompressor(int32_t compression_level, const uint32_t block_size)
-        : ICompressor(compression_level, block_size){};
+        : ICompressor(compression_level, block_size) {};
 
     std::vector<uint8_t> Compress(const void* data, size_t length) const override {
         const auto bound = compressBound(length);
@@ -124,7 +122,7 @@ class GzCompressor final : public ICompressor {
 class Lz4Compressor final : public ICompressor {
   public:
     Lz4Compressor(int32_t compression_level, const uint32_t block_size)
-        : ICompressor(compression_level, block_size){};
+        : ICompressor(compression_level, block_size) {};
 
     std::vector<uint8_t> Compress(const void* data, size_t length) const override {
         const auto bound = LZ4_compressBound(length);
@@ -149,32 +147,6 @@ class Lz4Compressor final : public ICompressor {
         } else {
             buffer.resize(compressed_size);
         }
-        return buffer;
-    };
-};
-
-class BrotliCompressor final : public ICompressor {
-  public:
-    BrotliCompressor(int32_t compression_level, const uint32_t block_size)
-        : ICompressor(compression_level, block_size){};
-
-    std::vector<uint8_t> Compress(const void* data, size_t length) const override {
-        const auto bound = BrotliEncoderMaxCompressedSize(length);
-        if (!bound) {
-            LOG(ERROR) << "BrotliEncoderMaxCompressedSize returned 0";
-            return {};
-        }
-        std::vector<uint8_t> buffer(bound, '\0');
-
-        size_t encoded_size = bound;
-        auto rv = BrotliEncoderCompress(
-                GetCompressionLevel(), BROTLI_DEFAULT_WINDOW, BROTLI_DEFAULT_MODE, length,
-                reinterpret_cast<const uint8_t*>(data), &encoded_size, buffer.data());
-        if (!rv) {
-            LOG(ERROR) << "BrotliEncoderCompress failed";
-            return {};
-        }
-        buffer.resize(encoded_size);
         return buffer;
     };
 };
@@ -317,11 +289,6 @@ bool CompressWorker::GetCompressedBuffers(std::vector<std::vector<uint8_t>>* com
             return true;
         }
     }
-}
-
-std::unique_ptr<ICompressor> ICompressor::Brotli(const int32_t compression_level,
-                                                 const uint32_t block_size) {
-    return std::make_unique<BrotliCompressor>(compression_level, block_size);
 }
 
 std::unique_ptr<ICompressor> ICompressor::Gz(const int32_t compression_level,

@@ -327,7 +327,7 @@ static bool write_fd_chunk_range(int fd, int64_t offset, uint64_t len, T callbac
   int64_t current_offset = offset;
   while (bytes_written < len) {
     size_t mmap_size = std::min(static_cast<uint64_t>(kMaxMmapSize), len - bytes_written);
-    auto m = android::base::MappedFile::FromFd(fd, current_offset, mmap_size, PROT_READ);
+    auto m = android::base::MappedFile::Create(fd, current_offset, mmap_size, PROT_READ);
     if (!m) {
       error("failed to mmap region of length %zu", mmap_size);
       return false;

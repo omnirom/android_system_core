@@ -57,5 +57,11 @@ cc_binary {
         "libtrusty",
     ],
 
-    vintf_fragments: ["android.hardware.gatekeeper-service.trusty.xml"],
+    vintf_fragment_modules: ["android.hardware.gatekeeper-service.trusty.xml"],
+}
+
+vintf_fragment {
+    name: "android.hardware.gatekeeper-service.trusty.xml",
+    src: "android.hardware.gatekeeper-service.trusty.xml",
+    vendor: true,
 }

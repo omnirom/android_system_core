@@ -16,9 +16,6 @@
 
 #include <poll.h>
 
-#include <string>
-#include <vector>
-
 #include "user-space-merge/snapuserd_server.h"
 
 namespace android {
@@ -52,6 +49,8 @@ class Daemon {
     void MaskAllSignalsExceptIntAndTerm();
     void MaskAllSignals();
     static void SignalHandler(int signal);
+    bool SendUeventRequest(int socket, const std::string& device_path);
+    bool SendDoneNotification(int socket_fd);
 };
 
 }  // namespace snapshot

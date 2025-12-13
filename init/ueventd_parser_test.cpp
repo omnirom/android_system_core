@@ -36,8 +36,7 @@ void TestPermissions(const Permissions& expected, const Permissions& test) {
     EXPECT_EQ(expected.perm_, test.perm_) << expected.name_;
     EXPECT_EQ(expected.uid_, test.uid_) << expected.name_;
     EXPECT_EQ(expected.gid_, test.gid_) << expected.name_;
-    EXPECT_EQ(expected.prefix_, test.prefix_) << expected.name_;
-    EXPECT_EQ(expected.wildcard_, test.wildcard_) << expected.name_;
+    EXPECT_EQ(expected.match_type_, test.match_type_) << expected.name_;
 }
 
 void TestSysfsPermissions(const SysfsPermissions& expected, const SysfsPermissions& test) {

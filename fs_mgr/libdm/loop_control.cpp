@@ -98,6 +98,27 @@ bool LoopControl::Detach(const std::string& loopdev) const {
     return true;
 }
 
+bool LoopControl::Add(int id) const {
+    int rc = ioctl(control_fd_, LOOP_CTL_ADD, id);
+    if (rc < 0) {
+        // To avoid logspam
+        if (errno != EEXIST) {
+            PLOG(ERROR) << "Failed LOOP_CTL_ADD to add a loop device " << id;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool LoopControl::Remove(int id) const {
+    int rc = ioctl(control_fd_, LOOP_CTL_REMOVE, id);
+    if (rc < 0) {
+        PLOG(ERROR) << "Failed LOOP_CTL_REMOVE to remove a loop device " << id;
+        return false;
+    }
+    return true;
+}
+
 bool LoopControl::FindFreeLoopDevice(std::string* loopdev) const {
     int rc = ioctl(control_fd_, LOOP_CTL_GET_FREE);
     if (rc < 0) {

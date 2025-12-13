@@ -13,6 +13,7 @@ cc_binary_host {
         "libcutils",
         "liblog",
     ],
+    stl: "libc++_static",
     dist: {
         targets: ["dist_files"],
     },

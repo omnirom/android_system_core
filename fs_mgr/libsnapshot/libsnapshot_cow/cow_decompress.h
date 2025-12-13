@@ -45,7 +45,6 @@ class IDecompressor {
     // Factory methods for decompression methods.
     static std::unique_ptr<IDecompressor> Uncompressed();
     static std::unique_ptr<IDecompressor> Gz();
-    static std::unique_ptr<IDecompressor> Brotli();
     static std::unique_ptr<IDecompressor> Lz4();
     static std::unique_ptr<IDecompressor> Zstd();
 

@@ -21,6 +21,21 @@
 #include <android-base/logging.h>
 #include <android-base/strings.h>
 
+static bool umount_retry(const std::string& mount_point) {
+    int retry_count = 5;
+    bool umounted = false;
+
+    while (retry_count-- > 0) {
+        umounted = umount(mount_point.c_str()) == 0;
+        if (umounted) {
+            break;
+        }
+        PLOG(ERROR) << "umount FAILED: " << mount_point;
+        if (retry_count) sleep(1);
+    }
+    return umounted;
+}
+
 int main(int /*argc*/, char** argv) {
     android::base::InitLogging(argv, &android::base::KernelLogger);
     LOG(INFO) << "Overlay remounter will remount all overlay mount points in the overlay_remounter "
@@ -36,7 +51,7 @@ int main(int /*argc*/, char** argv) {
             continue;
         }
         auto bits = android::base::Split(line, " ");
-        if (int result = umount(bits[1].c_str()); result == -1) {
+        if (umount_retry(bits[1]) == false) {
             PLOG(FATAL) << "umount FAILED: " << bits[1];
         }
         std::string options;

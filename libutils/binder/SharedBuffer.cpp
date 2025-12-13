@@ -20,8 +20,12 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <cstddef>
+#include <new>
 
 #include <log/log.h>
+
+#include <utils/AllocatorTracker.h>
 
 // ---------------------------------------------------------------------------
 
@@ -33,23 +37,23 @@ SharedBuffer* SharedBuffer::alloc(size_t size)
     // size_max.
     LOG_ALWAYS_FATAL_IF((size >= (SIZE_MAX - sizeof(SharedBuffer))),
                         "Invalid buffer size %zu", size);
+    SharedBuffer* sb = static_cast<SharedBuffer*>(ANDROID_MALLOC(sizeof(SharedBuffer) + size));
 
-    SharedBuffer* sb = static_cast<SharedBuffer *>(malloc(sizeof(SharedBuffer) + size));
     if (sb) {
-        // Should be std::atomic_init(&sb->mRefs, 1);
-        // But that generates a warning with some compilers.
-        // The following is OK on Android-supported platforms.
-        sb->mRefs.store(1, std::memory_order_relaxed);
-        sb->mSize = size;
-        sb->mClientMetadata = 0;
+      // Should be std::atomic_init(&sb->mRefs, 1);
+      // But that generates a warning with some compilers.
+      // The following is OK on Android-supported platforms.
+      sb->mRefs.store(1, std::memory_order_relaxed);
+      sb->mSize = size;
+      sb->mClientMetadata = 0;
     }
     return sb;
 }
 
-
 void SharedBuffer::dealloc(const SharedBuffer* released)
 {
-    free(const_cast<SharedBuffer*>(released));
+  SharedBuffer* buffer = const_cast<SharedBuffer*>(released);
+  ANDROID_FREE(buffer);
 }
 
 SharedBuffer* SharedBuffer::edit() const
@@ -75,7 +79,8 @@ SharedBuffer* SharedBuffer::editResize(size_t newSize) const
         LOG_ALWAYS_FATAL_IF((newSize >= (SIZE_MAX - sizeof(SharedBuffer))),
                             "Invalid buffer size %zu", newSize);
 
-        buf = (SharedBuffer*)realloc(reinterpret_cast<void*>(buf), sizeof(SharedBuffer) + newSize);
+        buf = (SharedBuffer*)ANDROID_REALLOC(reinterpret_cast<void*>(buf),
+                                             sizeof(SharedBuffer) + newSize);
         if (buf != nullptr) {
             buf->mSize = newSize;
             return buf;
@@ -87,7 +92,7 @@ SharedBuffer* SharedBuffer::editResize(size_t newSize) const
         memcpy(sb->data(), data(), newSize < mySize ? newSize : mySize);
         release();
     }
-    return sb;    
+    return sb;
 }
 
 SharedBuffer* SharedBuffer::attemptEdit() const
@@ -135,6 +140,5 @@ int32_t SharedBuffer::release(uint32_t flags) const
     }
     return prevRefCount;
 }
-
 
 }; // namespace android

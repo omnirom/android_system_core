@@ -27,6 +27,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <ctime>
+#include <initializer_list>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -46,7 +47,7 @@
 #include <android/log.h>
 #include <cutils/android_reboot.h>
 #include <cutils/properties.h>
-#include <statslog.h>
+#include <statslog_bootstats.h>
 
 #include "boot_event_record_store.h"
 
@@ -57,83 +58,90 @@ struct AtomInfo {
   int32_t event;
 };
 
+// Identifier for the firmware boot 'splash' screen stage on desktop. This stage
+// timing is already included in the 'firmware' part of the boot sequence, so it
+// must not calculated twice when summing together all boot stages.
+const std::string_view FIRMWARE_SPLASH = "splash";
+
 // Maps BootEvent used inside bootstat into statsd atom defined in
 // frameworks/proto_logging/stats/atoms.proto.
 const std::unordered_map<std::string_view, AtomInfo> kBootEventToAtomInfo = {
     // ELAPSED_TIME
     {"ro.boottime.init",
-     {android::util::BOOT_TIME_EVENT_ELAPSED_TIME_REPORTED,
-      android::util::BOOT_TIME_EVENT_ELAPSED_TIME__EVENT__ANDROID_INIT_STAGE_1}},
+     {android::util::bootstats::BOOT_TIME_EVENT_ELAPSED_TIME_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_ELAPSED_TIME__EVENT__ANDROID_INIT_STAGE_1}},
     {"boot_complete",
-     {android::util::BOOT_TIME_EVENT_ELAPSED_TIME_REPORTED,
-      android::util::BOOT_TIME_EVENT_ELAPSED_TIME__EVENT__BOOT_COMPLETE}},
+     {android::util::bootstats::BOOT_TIME_EVENT_ELAPSED_TIME_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_ELAPSED_TIME__EVENT__BOOT_COMPLETE}},
     {"boot_complete_no_encryption",
-     {android::util::BOOT_TIME_EVENT_ELAPSED_TIME_REPORTED,
-      android::util::BOOT_TIME_EVENT_ELAPSED_TIME__EVENT__BOOT_COMPLETE_NO_ENCRYPTION}},
+     {android::util::bootstats::BOOT_TIME_EVENT_ELAPSED_TIME_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_ELAPSED_TIME__EVENT__BOOT_COMPLETE_NO_ENCRYPTION}},
     {"factory_reset_boot_complete",
-     {android::util::BOOT_TIME_EVENT_ELAPSED_TIME_REPORTED,
-      android::util::BOOT_TIME_EVENT_ELAPSED_TIME__EVENT__FACTORY_RESET_BOOT_COMPLETE}},
+     {android::util::bootstats::BOOT_TIME_EVENT_ELAPSED_TIME_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_ELAPSED_TIME__EVENT__FACTORY_RESET_BOOT_COMPLETE}},
     {"factory_reset_boot_complete_no_encryption",
-     {android::util::BOOT_TIME_EVENT_ELAPSED_TIME_REPORTED,
-      android::util::
+     {android::util::bootstats::BOOT_TIME_EVENT_ELAPSED_TIME_REPORTED,
+      android::util::bootstats::
           BOOT_TIME_EVENT_ELAPSED_TIME__EVENT__FACTORY_RESET_BOOT_COMPLETE_NO_ENCRYPTION}},
     {"ota_boot_complete",
-     {android::util::BOOT_TIME_EVENT_ELAPSED_TIME_REPORTED,
-      android::util::BOOT_TIME_EVENT_ELAPSED_TIME__EVENT__OTA_BOOT_COMPLETE}},
+     {android::util::bootstats::BOOT_TIME_EVENT_ELAPSED_TIME_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_ELAPSED_TIME__EVENT__OTA_BOOT_COMPLETE}},
     {"ota_boot_complete_no_encryption",
-     {android::util::BOOT_TIME_EVENT_ELAPSED_TIME_REPORTED,
-      android::util::BOOT_TIME_EVENT_ELAPSED_TIME__EVENT__OTA_BOOT_COMPLETE_NO_ENCRYPTION}},
+     {android::util::bootstats::BOOT_TIME_EVENT_ELAPSED_TIME_REPORTED,
+      android::util::bootstats::
+          BOOT_TIME_EVENT_ELAPSED_TIME__EVENT__OTA_BOOT_COMPLETE_NO_ENCRYPTION}},
     // DURATION
     {"absolute_boot_time",
-     {android::util::BOOT_TIME_EVENT_DURATION_REPORTED,
-      android::util::BOOT_TIME_EVENT_DURATION__EVENT__ABSOLUTE_BOOT_TIME}},
+     {android::util::bootstats::BOOT_TIME_EVENT_DURATION_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_DURATION__EVENT__ABSOLUTE_BOOT_TIME}},
     {"boottime.bootloader.1BLE",
-     {android::util::BOOT_TIME_EVENT_DURATION_REPORTED,
-      android::util::BOOT_TIME_EVENT_DURATION__EVENT__BOOTLOADER_FIRST_STAGE_EXEC}},
+     {android::util::bootstats::BOOT_TIME_EVENT_DURATION_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_DURATION__EVENT__BOOTLOADER_FIRST_STAGE_EXEC}},
     {"boottime.bootloader.1BLL",
-     {android::util::BOOT_TIME_EVENT_DURATION_REPORTED,
-      android::util::BOOT_TIME_EVENT_DURATION__EVENT__BOOTLOADER_FIRST_STAGE_LOAD}},
+     {android::util::bootstats::BOOT_TIME_EVENT_DURATION_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_DURATION__EVENT__BOOTLOADER_FIRST_STAGE_LOAD}},
     {"boottime.bootloader.KL",
-     {android::util::BOOT_TIME_EVENT_DURATION_REPORTED,
-      android::util::BOOT_TIME_EVENT_DURATION__EVENT__BOOTLOADER_KERNEL_LOAD}},
+     {android::util::bootstats::BOOT_TIME_EVENT_DURATION_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_DURATION__EVENT__BOOTLOADER_KERNEL_LOAD}},
     {"boottime.bootloader.2BLE",
-     {android::util::BOOT_TIME_EVENT_DURATION_REPORTED,
-      android::util::BOOT_TIME_EVENT_DURATION__EVENT__BOOTLOADER_SECOND_STAGE_EXEC}},
+     {android::util::bootstats::BOOT_TIME_EVENT_DURATION_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_DURATION__EVENT__BOOTLOADER_SECOND_STAGE_EXEC}},
     {"boottime.bootloader.2BLL",
-     {android::util::BOOT_TIME_EVENT_DURATION_REPORTED,
-      android::util::BOOT_TIME_EVENT_DURATION__EVENT__BOOTLOADER_SECOND_STAGE_LOAD}},
+     {android::util::bootstats::BOOT_TIME_EVENT_DURATION_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_DURATION__EVENT__BOOTLOADER_SECOND_STAGE_LOAD}},
     {"boottime.bootloader.SW",
-     {android::util::BOOT_TIME_EVENT_DURATION_REPORTED,
-      android::util::BOOT_TIME_EVENT_DURATION__EVENT__BOOTLOADER_UI_WAIT}},
+     {android::util::bootstats::BOOT_TIME_EVENT_DURATION_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_DURATION__EVENT__BOOTLOADER_UI_WAIT}},
     {"boottime.bootloader.total",
-     {android::util::BOOT_TIME_EVENT_DURATION_REPORTED,
-      android::util::BOOT_TIME_EVENT_DURATION__EVENT__BOOTLOADER_TOTAL}},
+     {android::util::bootstats::BOOT_TIME_EVENT_DURATION_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_DURATION__EVENT__BOOTLOADER_TOTAL}},
     {"boottime.init.cold_boot_wait",
-     {android::util::BOOT_TIME_EVENT_DURATION_REPORTED,
-      android::util::BOOT_TIME_EVENT_DURATION__EVENT__COLDBOOT_WAIT}},
+     {android::util::bootstats::BOOT_TIME_EVENT_DURATION_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_DURATION__EVENT__COLDBOOT_WAIT}},
     {"time_since_factory_reset",
-     {android::util::BOOT_TIME_EVENT_DURATION_REPORTED,
-      android::util::BOOT_TIME_EVENT_DURATION__EVENT__FACTORY_RESET_TIME_SINCE_RESET}},
+     {android::util::bootstats::BOOT_TIME_EVENT_DURATION_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_DURATION__EVENT__FACTORY_RESET_TIME_SINCE_RESET}},
     {"ro.boottime.init.first_stage",
-     {android::util::BOOT_TIME_EVENT_DURATION_REPORTED,
-      android::util::BOOT_TIME_EVENT_DURATION__EVENT__ANDROID_INIT_STAGE_1}},
+     {android::util::bootstats::BOOT_TIME_EVENT_DURATION_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_DURATION__EVENT__ANDROID_INIT_STAGE_1}},
     {"ro.boottime.init.selinux",
-     {android::util::BOOT_TIME_EVENT_DURATION_REPORTED,
-      android::util::BOOT_TIME_EVENT_DURATION__EVENT__SELINUX_INIT}},
+     {android::util::bootstats::BOOT_TIME_EVENT_DURATION_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_DURATION__EVENT__SELINUX_INIT}},
     // UTC_TIME
     {"factory_reset",
-     {android::util::BOOT_TIME_EVENT_UTC_TIME_REPORTED,
-      android::util::BOOT_TIME_EVENT_UTC_TIME__EVENT__FACTORY_RESET_RESET_TIME}},
+     {android::util::bootstats::BOOT_TIME_EVENT_UTC_TIME_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_UTC_TIME__EVENT__FACTORY_RESET_RESET_TIME}},
     {"factory_reset_current_time",
-     {android::util::BOOT_TIME_EVENT_UTC_TIME_REPORTED,
-      android::util::BOOT_TIME_EVENT_UTC_TIME__EVENT__FACTORY_RESET_CURRENT_TIME}},
+     {android::util::bootstats::BOOT_TIME_EVENT_UTC_TIME_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_UTC_TIME__EVENT__FACTORY_RESET_CURRENT_TIME}},
     {"factory_reset_record_value",
-     {android::util::BOOT_TIME_EVENT_UTC_TIME_REPORTED,
-      android::util::BOOT_TIME_EVENT_UTC_TIME__EVENT__FACTORY_RESET_RECORD_VALUE}},
+     {android::util::bootstats::BOOT_TIME_EVENT_UTC_TIME_REPORTED,
+      android::util::bootstats::BOOT_TIME_EVENT_UTC_TIME__EVENT__FACTORY_RESET_RECORD_VALUE}},
     // ERROR_CODE
     {"factory_reset_current_time_failure",
-     {android::util::BOOT_TIME_EVENT_ERROR_CODE_REPORTED,
-      android::util::BOOT_TIME_EVENT_ERROR_CODE__EVENT__FACTORY_RESET_CURRENT_TIME_FAILURE}},
+     {android::util::bootstats::BOOT_TIME_EVENT_ERROR_CODE_REPORTED,
+      android::util::bootstats::
+          BOOT_TIME_EVENT_ERROR_CODE__EVENT__FACTORY_RESET_CURRENT_TIME_FAILURE}},
 };
 
 // Scans the boot event record store for record files and logs each boot event
@@ -146,14 +154,19 @@ void LogBootEvents() {
     const auto& name = event.first;
     const auto& info = kBootEventToAtomInfo.find(name);
     if (info != kBootEventToAtomInfo.end()) {
-      if (info->second.atom == android::util::BOOT_TIME_EVENT_ERROR_CODE_REPORTED) {
-        android::util::stats_write(static_cast<int32_t>(info->second.atom),
-                                   static_cast<int32_t>(info->second.event),
-                                   static_cast<int32_t>(event.second));
+      if (info->second.atom == android::util::bootstats::BOOT_TIME_EVENT_ERROR_CODE_REPORTED) {
+        android::util::bootstats::stats_write(static_cast<int32_t>(info->second.atom),
+                                              static_cast<int32_t>(info->second.event),
+                                              static_cast<int32_t>(event.second));
       } else {
-        android::util::stats_write(static_cast<int32_t>(info->second.atom),
-                                   static_cast<int32_t>(info->second.event),
-                                   static_cast<int64_t>(event.second));
+        int64_t value = static_cast<int64_t>(event.second);
+        // ro.boottime.init is recorded in ns, but we want to report it to
+        // statsd in ms.
+        if (name == "ro.boottime.init") {
+          value /= 1000000;
+        }
+        android::util::bootstats::stats_write(static_cast<int32_t>(info->second.atom),
+                                              static_cast<int32_t>(info->second.event), value);
       }
     } else {
       notSupportedEvents.push_back(name);
@@ -422,7 +435,7 @@ const std::map<std::string, int32_t> kBootReasonMap = {
     {"reboot,mount_userdata_failed", 190},
     {"reboot,forcedsilent", 191},
     {"reboot,forcednonsilent", 192},
-    {"reboot,thermal,tj", 193},
+    {"reboot,thermal,tj.*", 193},
     {"reboot,emergency", 194},
     {"reboot,factory", 195},
     {"reboot,fastboot", 196},
@@ -470,6 +483,7 @@ const std::map<std::string, int32_t> kBootReasonMap = {
     {"reboot,fship.*", 238},
     {"reboot,ocp,.*", 239},
     {"reboot,ntc,pmic,sub", 240},
+    {"reboot,telemtemp,pmic,main", 241},
 };
 
 // Converts a string value representing the reason the system booted to an
@@ -1150,29 +1164,27 @@ std::string BootReasonStrToReason(const std::string& boot_reason) {
 // bookkeeping required to track when a system update has occurred by storing
 // the UTC timestamp of the system build date and comparing against the current
 // system build date.
-std::string CalculateBootCompletePrefix() {
+std::string_view CalculateBootCompletePrefix() {
   static const std::string kBuildDateKey = "build_date";
-  std::string boot_complete_prefix = "boot_complete";
 
   auto build_date_str = android::base::GetProperty("ro.build.date.utc", "");
   int32_t build_date;
   if (!android::base::ParseInt(build_date_str, &build_date)) {
-    return std::string();
+    return std::string_view();
   }
 
   BootEventRecordStore boot_event_store;
   BootEventRecordStore::BootEventRecord record;
   if (!boot_event_store.GetBootEvent(kBuildDateKey, &record)) {
-    boot_complete_prefix = "factory_reset_" + boot_complete_prefix;
     boot_event_store.AddBootEventWithValue(kBuildDateKey, build_date);
     BootReasonAddToHistory("reboot,factory_reset");
+    return BootEventRecordStore::kFactoryResetBootCompletePrefix;
   } else if (build_date != record.second) {
-    boot_complete_prefix = "ota_" + boot_complete_prefix;
     boot_event_store.AddBootEventWithValue(kBuildDateKey, build_date);
     BootReasonAddToHistory("reboot,ota");
+    return BootEventRecordStore::kOtaBootCompletePrefix;
   }
-
-  return boot_complete_prefix;
+  return BootEventRecordStore::kBootCompletePrefix;
 }
 
 // Records the value of a given ro.boottime.init property in milliseconds.
@@ -1219,9 +1231,12 @@ const BootloaderTimingMap GetBootLoaderTimings() {
 }
 
 // Returns the total bootloader boot time from the ro.boot.boottime system property.
-int32_t GetBootloaderTime(const BootloaderTimingMap& bootloader_timings) {
+int32_t GetBootloaderTime(const BootloaderTimingMap& bootloader_timings,
+                          const std::initializer_list<std::string_view>& skipped) {
   int32_t total_time = 0;
   for (const auto& timing : bootloader_timings) {
+    // Skip any metric that should not be used in the total time calculation.
+    if (std::find(skipped.begin(), skipped.end(), timing.first) != skipped.end()) continue;
     total_time += timing.second;
   }
 
@@ -1231,28 +1246,19 @@ int32_t GetBootloaderTime(const BootloaderTimingMap& bootloader_timings) {
 // Parses and records the set of bootloader stages and associated boot times
 // from the ro.boot.boottime system property.
 void RecordBootloaderTimings(BootEventRecordStore* boot_event_store,
-                             const BootloaderTimingMap& bootloader_timings) {
-  int32_t total_time = 0;
+                             const BootloaderTimingMap& bootloader_timings,
+                             const int32_t bootloader_boot_duration) {
   for (const auto& timing : bootloader_timings) {
-    total_time += timing.second;
     boot_event_store->AddBootEventWithValue("boottime.bootloader." + timing.first, timing.second);
   }
-
-  boot_event_store->AddBootEventWithValue("boottime.bootloader.total", total_time);
+  boot_event_store->AddBootEventWithValue("boottime.bootloader.total", bootloader_boot_duration);
 }
 
 // Returns the closest estimation to the absolute device boot time, i.e.,
 // from power on to boot_complete, including bootloader times.
 std::chrono::milliseconds GetAbsoluteBootTime(const BootloaderTimingMap& bootloader_timings,
                                               std::chrono::milliseconds uptime) {
-  int32_t bootloader_time_ms = 0;
-
-  for (const auto& timing : bootloader_timings) {
-    if (timing.first.compare("SW") != 0) {
-      bootloader_time_ms += timing.second;
-    }
-  }
-
+  int32_t bootloader_time_ms = GetBootloaderTime(bootloader_timings, {FIRMWARE_SPLASH, "SW"});
   auto bootloader_duration = std::chrono::milliseconds(bootloader_time_ms);
   return bootloader_duration + uptime;
 }
@@ -1271,10 +1277,16 @@ void LogBootInfoToStatsd(std::chrono::milliseconds end_time,
                          double time_since_last_boot_sec) {
   auto reason = android::base::GetProperty(bootloader_reboot_reason_property, "<EMPTY>");
   auto system_reason = android::base::GetProperty(system_reboot_reason_property, "<EMPTY>");
-  android::util::stats_write(android::util::BOOT_SEQUENCE_REPORTED, reason.c_str(),
-                             system_reason.c_str(), end_time.count(), total_duration.count(),
-                             (int64_t)bootloader_duration_ms,
-                             (int64_t)time_since_last_boot_sec * 1000);
+  auto system_reason_parts = android::base::Split(system_reason, ",");
+  std::string main_reason, sub_reason, detail;
+  main_reason = (system_reason_parts.size() > 0) ? system_reason_parts[0] : "";
+  sub_reason = (system_reason_parts.size() > 1) ? system_reason_parts[1] : "";
+  detail = (system_reason_parts.size() > 2) ? system_reason_parts[2] : "";
+  android::util::bootstats::stats_write(
+      android::util::bootstats::BOOT_SEQUENCE_REPORTED, reason.c_str(), system_reason.c_str(),
+      end_time.count(), total_duration.count(), (int64_t)bootloader_duration_ms,
+      (int64_t)time_since_last_boot_sec * 1000,
+      main_reason.c_str(), sub_reason.c_str(), detail.c_str());
 }
 
 void SetSystemBootReason() {
@@ -1328,7 +1340,7 @@ void RecordBootComplete() {
   BootEventRecordStore::BootEventRecord record;
 
   auto uptime_ns = GetUptime();
-  auto uptime_s = std::chrono::duration_cast<std::chrono::seconds>(uptime_ns);
+  auto uptime_ms = std::chrono::duration_cast<std::chrono::milliseconds>(uptime_ns);
   time_t current_time_utc = time(nullptr);
   time_t time_since_last_boot = 0;
 
@@ -1343,23 +1355,14 @@ void RecordBootComplete() {
   // The boot_complete metric has two variants: boot_complete and
   // ota_boot_complete.  The latter signifies that the device is booting after
   // a system update.
-  std::string boot_complete_prefix = CalculateBootCompletePrefix();
+  std::string_view boot_complete_prefix = CalculateBootCompletePrefix();
   if (boot_complete_prefix.empty()) {
     // The system is hosed because the build date property could not be read.
     return;
   }
 
-  // The *_no_encryption events are emitted unconditionally, since they are left
-  // over from a time when encryption meant "full-disk encryption".  But Android
-  // now always uses file-based encryption instead of full-disk encryption.  At
-  // some point, these misleading and redundant events should be removed.
-  boot_event_store.AddBootEventWithValue(boot_complete_prefix + "_no_encryption",
-                                         uptime_s.count());
-
-  // Record the total time from device startup to boot complete.  Note: we are
-  // recording seconds here even though the field in statsd atom specifies
-  // milliseconds.
-  boot_event_store.AddBootEventWithValue(boot_complete_prefix, uptime_s.count());
+  // Record the total time from device startup to boot complete.
+  boot_event_store.AddBootEventWithValue(std::string(boot_complete_prefix), uptime_ms.count());
 
   RecordInitBootTimeProp(&boot_event_store, "ro.boottime.init");
   RecordInitBootTimeProp(&boot_event_store, "ro.boottime.init.first_stage");
@@ -1367,10 +1370,9 @@ void RecordBootComplete() {
   RecordInitBootTimeProp(&boot_event_store, "ro.boottime.init.cold_boot_wait");
 
   const BootloaderTimingMap bootloader_timings = GetBootLoaderTimings();
-  int32_t bootloader_boot_duration = GetBootloaderTime(bootloader_timings);
-  RecordBootloaderTimings(&boot_event_store, bootloader_timings);
+  const int32_t bootloader_boot_duration = GetBootloaderTime(bootloader_timings, {FIRMWARE_SPLASH});
+  RecordBootloaderTimings(&boot_event_store, bootloader_timings, bootloader_boot_duration);
 
-  auto uptime_ms = std::chrono::duration_cast<std::chrono::milliseconds>(uptime_ns);
   auto absolute_boot_time = GetAbsoluteBootTime(bootloader_timings, uptime_ms);
   RecordAbsoluteBootTime(&boot_event_store, absolute_boot_time);
 
@@ -1427,10 +1429,11 @@ void RecordFactoryReset() {
   if (current_time_utc < 0) {
     // UMA does not display negative values in buckets, so convert to positive.
     // Logging via BootEventRecordStore.
-    android::util::stats_write(
-        static_cast<int32_t>(android::util::BOOT_TIME_EVENT_ERROR_CODE_REPORTED),
+    android::util::bootstats::stats_write(
+        static_cast<int32_t>(android::util::bootstats::BOOT_TIME_EVENT_ERROR_CODE_REPORTED),
         static_cast<int32_t>(
-            android::util::BOOT_TIME_EVENT_ERROR_CODE__EVENT__FACTORY_RESET_CURRENT_TIME_FAILURE),
+            android::util::bootstats::
+                BOOT_TIME_EVENT_ERROR_CODE__EVENT__FACTORY_RESET_CURRENT_TIME_FAILURE),
         static_cast<int32_t>(std::abs(current_time_utc)));
 
     // Logging via BootEventRecordStore to see if using android::metricslogger::LogHistogram
@@ -1439,10 +1442,10 @@ void RecordFactoryReset() {
                                            std::abs(current_time_utc));
     return;
   } else {
-    android::util::stats_write(
-        static_cast<int32_t>(android::util::BOOT_TIME_EVENT_UTC_TIME_REPORTED),
+    android::util::bootstats::stats_write(
+        static_cast<int32_t>(android::util::bootstats::BOOT_TIME_EVENT_UTC_TIME_REPORTED),
         static_cast<int32_t>(
-            android::util::BOOT_TIME_EVENT_UTC_TIME__EVENT__FACTORY_RESET_CURRENT_TIME),
+            android::util::bootstats::BOOT_TIME_EVENT_UTC_TIME__EVENT__FACTORY_RESET_CURRENT_TIME),
         static_cast<int64_t>(current_time_utc));
 
     // Logging via BootEventRecordStore to see if using android::metricslogger::LogHistogram
@@ -1463,10 +1466,10 @@ void RecordFactoryReset() {
   // Calculate and record the difference in time between now and the
   // factory_reset time.
   time_t factory_reset_utc = record.second;
-  android::util::stats_write(
-      static_cast<int32_t>(android::util::BOOT_TIME_EVENT_UTC_TIME_REPORTED),
+  android::util::bootstats::stats_write(
+      static_cast<int32_t>(android::util::bootstats::BOOT_TIME_EVENT_UTC_TIME_REPORTED),
       static_cast<int32_t>(
-          android::util::BOOT_TIME_EVENT_UTC_TIME__EVENT__FACTORY_RESET_RECORD_VALUE),
+          android::util::bootstats::BOOT_TIME_EVENT_UTC_TIME__EVENT__FACTORY_RESET_RECORD_VALUE),
       static_cast<int64_t>(factory_reset_utc));
 
   // Logging via BootEventRecordStore to see if using android::metricslogger::LogHistogram

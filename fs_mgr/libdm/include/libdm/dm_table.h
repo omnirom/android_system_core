@@ -68,6 +68,9 @@ class DmTable {
     // as part of the DM_TABLE_LOAD ioctl.
     std::string Serialize() const;
 
+    // Returns a string representation of the table that can be used for debugging purposes.
+    std::string DebugString() const;
+
     void set_readonly(bool readonly) { readonly_ = readonly; }
     bool readonly() const { return readonly_; }
 

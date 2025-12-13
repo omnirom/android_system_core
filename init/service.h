@@ -239,7 +239,7 @@ class Service {
 
     bool updatable_ = false;
 
-    const std::vector<std::string> args_;
+    std::vector<std::string> args_;
 
     std::vector<std::function<void(const siginfo_t& siginfo)>> reap_callbacks_;
 

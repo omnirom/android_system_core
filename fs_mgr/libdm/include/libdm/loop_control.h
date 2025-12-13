@@ -43,6 +43,12 @@ class LoopControl final {
     // Detach the loop device given by 'loopdev' from the attached backing file.
     bool Detach(const std::string& loopdev) const;
 
+    // Add a new loop device with given 'id'.
+    bool Add(int id) const;
+
+    // Remove the device with given 'id'.
+    bool Remove(int id) const;
+
     // Enable Direct I/O on a loop device. This requires kernel 4.9+.
     static bool EnableDirectIo(int fd);
 
@@ -60,6 +66,8 @@ class LoopControl final {
     static constexpr const char* kLoopControlDevice = "/dev/loop-control";
 
     android::base::unique_fd control_fd_;
+
+    friend struct LoopControlTest;
 };
 
 // Create a temporary loop device around a file descriptor or path.

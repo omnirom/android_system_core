@@ -58,10 +58,13 @@ message Tombstone {
   uint32 uid = 7;
   string selinux_label = 8;
 
+  string executable_name = 27;
   repeated string command_line = 9;
 
   // Process uptime in seconds.
   uint32 process_uptime = 20;
+
+  string kernel_release = 28;
 
   Signal signal_info = 10;
   string abort_message = 14;
@@ -79,7 +82,7 @@ message Tombstone {
 
   StackHistoryBuffer stack_history_buffer = 26;
 
-  reserved 27 to 999;
+  reserved 29 to 999;
 }
 
 enum Architecture {

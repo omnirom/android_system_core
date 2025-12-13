@@ -27,7 +27,6 @@ namespace android {
 namespace init {
 
 Result<void> SetMmapRndBitsAction(const BuiltinArguments&);
-Result<void> SetKptrRestrictAction(const BuiltinArguments&);
 Result<void> TestPerfEventSelinuxAction(const BuiltinArguments&);
 
 }  // namespace init

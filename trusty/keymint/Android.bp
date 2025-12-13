@@ -20,17 +20,12 @@ package {
 rust_defaults {
     name: "android.hardware.security.keymint-service.rust.trusty.default",
     relative_install_path: "hw",
-    srcs: [
-        "src/keymint_hal_main.rs",
-    ],
     rustlibs: [
         "libandroid_logger",
         "libbinder_rs",
         "libclap",
         "libkmr_wire",
         "libkmr_hal",
-        "libtrusty-rs",
-        "liblibc",
         "liblog_rust",
     ],
     prefer_rlib: true,
@@ -39,11 +34,17 @@ rust_defaults {
 // keymint hal binary for keymint in Trusty TEE (legacy approach not using apex)
 rust_binary {
     name: "android.hardware.security.keymint-service.rust.trusty",
+    srcs: [
+        "src/keymint_hal_main.rs",
+    ],
     vendor: true,
     defaults: ["android.hardware.security.keymint-service.rust.trusty.default"],
     init_rc: ["android.hardware.security.keymint-service.rust.trusty.rc"],
     vintf_fragments: ["android.hardware.security.keymint-service.rust.trusty.xml"],
     required: ["android.hardware.hardware_keystore.xml"],
+    rustlibs: [
+        "libtrusty-rs",
+    ],
 }
 
 // Keymint hal service in vendor, enabled by vendor apex.
@@ -54,6 +55,9 @@ rust_binary {
 // - have the vendor apex package the vintf fragment
 rust_binary {
     name: "android.hardware.security.keymint-service.trusty_tee",
+    srcs: [
+        "src/keymint_hal_main.rs",
+    ],
     vendor: true,
     defaults: ["android.hardware.security.keymint-service.rust.trusty.default"],
     init_rc: ["android.hardware.security.keymint-service.trusty_tee.rc"],
@@ -63,6 +67,7 @@ rust_binary {
     }),
     rustlibs: [
         "libkmr_hal_nonsecure",
+        "libtrusty-rs",
     ],
 }
 
@@ -81,7 +86,12 @@ rust_binary {
         true: ["nonsecure"],
         default: [],
     }),
+    srcs: [
+        "src/keymint_hal_system_vm_main.rs",
+    ],
     rustlibs: [
+        "android.trusty.commservice-rust",
+        "libanyhow",
         "libkmr_hal_nonsecure",
     ],
 }

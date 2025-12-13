@@ -60,6 +60,21 @@ int AVendorSupport_getSdkApiLevelOf(int vendorApiLevel);
  * 0 if none of these properties are found. This is unexpected, though.
  */
 int AVendorSupport_getVendorApiLevel();
+
+/**
+ * @brief Provide the vendor API level of the device when it left the factory.
+ *
+ * @details
+ * Some features rely on data that is provisioned to the device in the factory.
+ * This data cannot be changed when the vendor layer is updated. This function should
+ * only be used when interacting with features that depend on provisioning. Introduced
+ * in API 37.
+ *
+ * @return The vendor API level when the device physically shipped, or -1 if the
+ * expected system properties are not found. The numbering scheme of the returned
+ * value is 30, 31, 32, 33, 34, 202404, 202504, etc.
+ */
+int AVendorSupport_getFirstVendorApiLevel();
 #endif  // __ANDROID_VENDOR__
 
 __END_DECLS

@@ -15,6 +15,7 @@
  */
 #include <errno.h>
 #include <getopt.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -36,6 +37,8 @@
 
 #define REQ_BUFFER_SIZE 4096
 static uint8_t req_buffer[REQ_BUFFER_SIZE + 1];
+
+static volatile sig_atomic_t terminate = false;
 
 static const char* ss_data_root;
 static const char* trusty_devname;
@@ -62,7 +65,7 @@ static enum dev_type parse_dev_type(const char* dev_type_name) {
     }
 }
 
-static int parse_and_append_file_mapping(const char* file_mapping) {
+static int parse_and_append_file_mapping(const char* file_mapping, bool uses_symlink) {
     if (file_mapping == NULL) {
         ALOGE("Provided file mapping is null\n");
         return -1;
@@ -91,20 +94,23 @@ static int parse_and_append_file_mapping(const char* file_mapping) {
     *new_node = (struct storage_mapping_node){.file_name = file_name,
                                               .backing_storage = backing_storage,
                                               .next = storage_mapping_head,
-                                              .fd = -1};
+                                              .pending_symlink_fd = -1,
+                                              .uses_symlink = uses_symlink};
     storage_mapping_head = new_node;
     return 0;
 }
 
-static const char* _sopts = "hp:d:r:t:m:f:";
-static const struct option _lopts[] = {{"help", no_argument, NULL, 'h'},
-                                       {"trusty_dev", required_argument, NULL, 'd'},
-                                       {"data_path", required_argument, NULL, 'p'},
-                                       {"rpmb_dev", required_argument, NULL, 'r'},
-                                       {"dev_type", required_argument, NULL, 't'},
-                                       {"max_file_size_from", required_argument, NULL, 'm'},
-                                       {"file_storage_mapping", required_argument, NULL, 'f'},
-                                       {0, 0, 0, 0}};
+static const char* _sopts = "hp:d:r:t:m:f:g:";
+static const struct option _lopts[] = {
+        {"help", no_argument, NULL, 'h'},
+        {"trusty_dev", required_argument, NULL, 'd'},
+        {"data_path", required_argument, NULL, 'p'},
+        {"rpmb_dev", required_argument, NULL, 'r'},
+        {"dev_type", required_argument, NULL, 't'},
+        {"max_file_size_from", required_argument, NULL, 'm'},
+        {"file_storage_mapping", required_argument, NULL, 'f'},
+        {"file_storage_mapping_no_link", required_argument, NULL, 'g'},
+        {0, 0, 0, 0}};
 
 static void show_usage_and_exit(int code) {
     ALOGE("usage: storageproxyd -d <trusty_dev> -p <data_path> -r <rpmb_dev> -t <dev_type>  [-m "
@@ -118,6 +124,10 @@ static void show_usage_and_exit(int code) {
           "block device for which a max file size can be queried.  File based\n"
           "storages will be constrained to that size as well.\n");
     exit(code);
+}
+
+static void handle_sigterm(int signum __attribute__((unused))) {
+    terminate = true;
 }
 
 static int handle_req(struct storage_msg* msg, const void* req, size_t req_len) {
@@ -218,10 +228,14 @@ static int proxy_loop(void) {
     struct storage_msg msg;
 
     /* enter main message handling loop */
-    while (true) {
+    while (!terminate) {
         /* get incoming message */
         rc = ipc_get_msg(&msg, req_buffer, REQ_BUFFER_SIZE);
-        if (rc < 0) return rc;
+        if (rc == EINTR && terminate) {
+            return 0;
+        } else if (rc < 0) {
+            return rc;
+        }
 
         /* handle request */
         req_buffer[rc] = 0; /* force zero termination */
@@ -260,7 +274,15 @@ static void parse_args(int argc, char* argv[]) {
                 break;
 
             case 'f':
-                rc = parse_and_append_file_mapping(optarg);
+                rc = parse_and_append_file_mapping(optarg, true);
+                if (rc < 0) {
+                    ALOGE("Failed to parse file mapping: %s\n", optarg);
+                    show_usage_and_exit(EXIT_FAILURE);
+                }
+                break;
+
+            case 'g':
+                rc = parse_and_append_file_mapping(optarg, false);
                 if (rc < 0) {
                     ALOGE("Failed to parse file mapping: %s\n", optarg);
                     show_usage_and_exit(EXIT_FAILURE);
@@ -303,6 +325,12 @@ int main(int argc, char* argv[]) {
      */
     umask(S_IRWXG | S_IRWXO);
 
+    /* catch SIGTERM for graceful shutdown */
+    const struct sigaction sa = {
+            .sa_handler = handle_sigterm,
+    };
+    sigaction(SIGTERM, &sa, NULL);
+
     /* parse arguments */
     parse_args(argc, argv);
 
@@ -332,10 +360,14 @@ int main(int argc, char* argv[]) {
 
     /* enter main loop */
     rc = proxy_loop();
-    ALOGE("exiting proxy loop with status (%d)\n", rc);
+    if (terminate) {
+        ALOGI("proxy loop terminated with status (%d)\n", rc);
+    } else {
+        ALOGE("exiting proxy loop with status (%d)\n", rc);
+    }
 
     ipc_disconnect();
     rpmb_close();
 
-    return (rc < 0) ? EXIT_FAILURE : EXIT_SUCCESS;
+    _exit((rc < 0) ? EXIT_FAILURE : EXIT_SUCCESS);
 }

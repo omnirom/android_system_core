@@ -33,6 +33,7 @@ static void ParseEvent(const char* msg, Uevent* uevent) {
     uevent->partition_num = -1;
     uevent->major = -1;
     uevent->minor = -1;
+    uevent->seqnum = -1;
     uevent->action.clear();
     uevent->path.clear();
     uevent->subsystem.clear();
@@ -41,7 +42,6 @@ static void ParseEvent(const char* msg, Uevent* uevent) {
     uevent->partition_name.clear();
     uevent->device_name.clear();
     uevent->modalias.clear();
-    // currently ignoring SEQNUM
     while (*msg) {
         if (!strncmp(msg, "ACTION=", 7)) {
             msg += 7;
@@ -67,6 +67,9 @@ static void ParseEvent(const char* msg, Uevent* uevent) {
         } else if (!strncmp(msg, "PARTN=", 6)) {
             msg += 6;
             uevent->partition_num = atoi(msg);
+        } else if (!strncmp(msg, "SEQNUM=", 7)) {
+            msg += 7;
+            uevent->seqnum = atoll(msg);
         } else if (!strncmp(msg, "PARTNAME=", 9)) {
             msg += 9;
             uevent->partition_name = msg;

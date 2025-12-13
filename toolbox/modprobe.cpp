@@ -46,7 +46,7 @@ void print_usage(void) {
     LOG(INFO) << "  modprobe [options] [-d DIR] MODULE [symbol=value]...";
     LOG(INFO);
     LOG(INFO) << "Options:";
-    LOG(INFO) << "  --all=FILE: FILE to acquire module names from";
+    LOG(INFO) << "  -a, --all=FILE: FILE to acquire module names from";
     LOG(INFO) << "  -b, --use-blocklist: Apply blocklist to module names too";
     LOG(INFO) << "  -d, --dirname=DIR: Load modules from DIR, option may be used multiple times";
     LOG(INFO) << "  -D, --show-depends: Print dependencies for modules only, do not load";

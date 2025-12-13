@@ -33,10 +33,6 @@ using android::base::unique_fd;
 */
 const unsigned int VM_TOMBSTONES_SERVICE_PORT = 2000;
 
-static bool is_microdroid() {
-  return android::base::GetProperty("ro.hardware", "") == "microdroid";
-}
-
 static bool connect_tombstone_server_microdroid(unique_fd* text_output_fd,
                                                 unique_fd* proto_output_fd,
                                                 DebuggerdDumpType dump_type) {
@@ -98,15 +94,21 @@ static bool notify_completion_microdroid(int vsock_out, int vsock_proto) {
   return true;
 }
 bool connect_tombstone_server(pid_t pid, unique_fd* tombstoned_socket, unique_fd* text_output_fd,
-                              unique_fd* proto_output_fd, DebuggerdDumpType dump_type) {
-  if (is_microdroid()) {
+                              unique_fd* proto_output_fd, DebuggerdDumpType dump_type,
+                              bool is_microdroid_crash) {
+  // In case of microdroid, we connect to tombstoned for `debuggerd -b`, and send to the host for
+  // crashes.
+  if (is_microdroid_crash) {
     return connect_tombstone_server_microdroid(text_output_fd, proto_output_fd, dump_type);
   }
   return tombstoned_connect(pid, tombstoned_socket, text_output_fd, proto_output_fd, dump_type);
 }
 
-bool notify_completion(int tombstoned_socket, int vsock_out, int vsock_proto) {
-  if (is_microdroid()) {
+bool notify_completion(int tombstoned_socket, int vsock_out, int vsock_proto,
+                       bool is_microdroid_crash) {
+  // In case of microdroid, we connect to tombstoned for `debuggerd -b`, and send to the host for
+  // crashes.
+  if (is_microdroid_crash) {
     return notify_completion_microdroid(vsock_out, vsock_proto);
   }
   return tombstoned_notify_completion(tombstoned_socket);

@@ -50,9 +50,11 @@
 #include <android-base/stringprintf.h>
 #include <android-base/strings.h>
 #include <android-base/thread_annotations.h>
+#include <com_android_apex_flags.h>
 #include <fs_avb/fs_avb.h>
 #include <fs_mgr_vendor_overlay.h>
 #include <libavb/libavb.h>
+#include <libdm/loop_control.h>
 #include <libgsi/libgsi.h>
 #include <libsnapshot/snapshot.h>
 #include <logwrap/logwrap.h>
@@ -100,19 +102,19 @@ using namespace std::string_literals;
 
 using android::base::boot_clock;
 using android::base::ConsumePrefix;
-using android::base::GetProperty;
-using android::base::GetIntProperty;
 using android::base::GetBoolProperty;
+using android::base::GetIntProperty;
+using android::base::GetProperty;
 using android::base::ReadFileToString;
 using android::base::SetProperty;
 using android::base::StringPrintf;
 using android::base::Timer;
 using android::base::Trim;
 using android::base::unique_fd;
-using android::fs_mgr::AvbHandle;
-using android::snapshot::SnapshotManager;
 using android::base::WaitForProperty;
 using android::base::WriteStringToFile;
+using android::fs_mgr::AvbHandle;
+using android::snapshot::SnapshotManager;
 
 namespace android {
 namespace init {
@@ -128,8 +130,8 @@ struct PendingControlMessage {
     pid_t pid;
     int fd;
 };
-static std::mutex pending_control_messages_lock;
-static std::queue<PendingControlMessage> pending_control_messages;
+[[clang::no_destroy]] static std::mutex pending_control_messages_lock;
+[[clang::no_destroy]] static std::queue<PendingControlMessage> pending_control_messages;
 
 // Init epolls various FDs to wait for various inputs.  It previously waited on property changes
 // with a blocking socket that contained the information related to the change, however, it was easy
@@ -236,7 +238,7 @@ void ResetWaitForProp() {
     prop_waiter_state.ResetWaitForProp();
 }
 
-static class ShutdownState {
+[[clang::no_destroy]] static class ShutdownState {
   public:
     void TriggerShutdown(const std::string& command) {
         // We can't call HandlePowerctlMessage() directly in this function,
@@ -369,6 +371,12 @@ void PropertyChanged(const std::string& name, const std::string& value) {
     // commands to be executed.
     if (name == "sys.powerctl") {
         trigger_shutdown(value);
+    } else if (name == "sys.shutdown.requested") {
+        // Higher layers send "sys.shutdown.requested" before they're ready to ask the init
+        // system to shutdown via the above "sys.powerctl". Use the early warning to start
+        // the watchdog so that if higher layers hang before setting "sys.powerctl" we
+        // don't end up hung.
+        HandleShutdownRequestedMessage(value);
     }
 
     if (property_triggers_enabled) {
@@ -434,8 +442,8 @@ int StopServicesFromApex(const std::string& apex_name) {
         service_names.emplace(service->name());
     }
     constexpr std::chrono::milliseconds kServiceStopTimeout = 10s;
-    int still_running = StopServicesAndLogViolations(service_names, kServiceStopTimeout,
-                        true /*SIGTERM*/);
+    int still_running =
+            StopServicesAndLogViolations(service_names, kServiceStopTimeout, true /*SIGTERM*/);
     // Send SIGKILL to ones that didn't terminate cleanly.
     if (still_running > 0) {
         still_running = StopServicesAndLogViolations(service_names, 0ms, false /*SIGKILL*/);
@@ -507,6 +515,7 @@ using ControlMessageFunction = std::function<Result<void>(Service*)>;
 
 static const std::map<std::string, ControlMessageFunction, std::less<>>& GetControlMessageMap() {
     // clang-format off
+    [[clang::no_destroy]]
     static const std::map<std::string, ControlMessageFunction, std::less<>> control_message_functions = {
         {"sigstop_on",        [](auto* service) { service->set_sigstop(true); return Result<void>{}; }},
         {"sigstop_off",       [](auto* service) { service->set_sigstop(false); return Result<void>{}; }},
@@ -663,7 +672,8 @@ static Result<void> property_enable_triggers_action(const BuiltinArguments& args
 }
 
 static Result<void> queue_property_triggers_action(const BuiltinArguments& args) {
-    ActionManager::GetInstance().QueueBuiltinAction(property_enable_triggers_action, "enable_property_trigger");
+    ActionManager::GetInstance().QueueBuiltinAction(property_enable_triggers_action,
+                                                    "enable_property_trigger");
     ActionManager::GetInstance().QueueAllPropertyActions();
     return {};
 }
@@ -674,7 +684,7 @@ static Result<void> queue_property_triggers_action(const BuiltinArguments& args)
 static void SetUsbController() {
     static auto controller_set = false;
     if (controller_set) return;
-    std::unique_ptr<DIR, decltype(&closedir)>dir(opendir("/sys/class/udc"), closedir);
+    std::unique_ptr<DIR, decltype(&closedir)> dir(opendir("/sys/class/udc"), closedir);
     if (!dir) return;
 
     dirent* dp;
@@ -733,7 +743,9 @@ static void HandleSignalFd(int signal) {
 }
 
 static void UnblockSignals() {
-    const struct sigaction act { .sa_handler = SIG_DFL };
+    const struct sigaction act {
+        .sa_handler = SIG_DFL
+    };
     sigaction(SIGCHLD, &act, nullptr);
 
     sigset_t mask;
@@ -747,8 +759,7 @@ static void UnblockSignals() {
 }
 
 static Result<void> RegisterSignalFd(Epoll* epoll, int signal, int fd) {
-    return epoll->RegisterHandler(
-            fd, [signal]() { HandleSignalFd(signal); }, EPOLLIN | EPOLLPRI);
+    return epoll->RegisterHandler(fd, [signal]() { HandleSignalFd(signal); }, EPOLLIN | EPOLLPRI);
 }
 
 static Result<int> CreateAndRegisterSignalFd(Epoll* epoll, int signal) {
@@ -771,7 +782,9 @@ static Result<int> CreateAndRegisterSignalFd(Epoll* epoll, int signal) {
 static void InstallSignalFdHandler(Epoll* epoll) {
     // Applying SA_NOCLDSTOP to a defaulted SIGCHLD handler prevents the signalfd from receiving
     // SIGCHLD when a child process stops or continues (b/77867680#comment9).
-    const struct sigaction act { .sa_flags = SA_NOCLDSTOP, .sa_handler = SIG_DFL };
+    const struct sigaction act {
+        .sa_flags = SA_NOCLDSTOP, .sa_handler = SIG_DFL
+    };
     sigaction(SIGCHLD, &act, nullptr);
 
     // Register a handler to unblock signals in the child processes.
@@ -853,6 +866,22 @@ static void MountExtraFilesystems() {
 #undef CHECKCALL
 }
 
+static void InitExtraDevices() {
+    if constexpr (com::android::apex::flags::mount_before_data()) {
+        // Pre-create a bunch of loop devices to accelerate apexd later. This effectively overrides
+        // CONFIG_BLK_DEV_LOOP_MIN_COUNT. 128 loop devices should be enough for now because most
+        // devices have < 100 apexes.
+        constexpr int kMaxLoopDevices = 128;
+        // Fire off a thread to pre-create the loop devices to avoid blocking the init.
+        std::thread([]() {
+            dm::LoopControl loop_control;
+            for (int i = 0; i < kMaxLoopDevices; i++) {
+                (void)loop_control.Add(i);
+            }
+        }).detach();
+    }
+}
+
 static void RecordStageBoottimes(const boot_clock::time_point& second_stage_start_time) {
     int64_t first_stage_start_time_ns = -1;
     if (auto first_stage_start_time_str = getenv(kEnvFirstStageStartedAt);
@@ -929,19 +958,78 @@ static Result<void> CheckTradeInModeStatus([[maybe_unused]] const BuiltinArgumen
     return {};
 }
 
+static void GetAndCopyRollbackLogs() {
+    LOG(INFO) << "Rollback indicator detected, checking pstore for rollback logs";
+    // These logs help diagnose the reason for the rollback,
+    // especially when /data might be wiped.
+    const std::vector<std::string> pstore_paths = {
+            "/sys/fs/pstore/console-ramoops",
+            "/sys/fs/pstore/console-ramoops-0",
+            "/sys/fs/pstore/pmsg-ramoops-0",
+    };
+
+    std::string pstore_content;
+    for (const auto& pstore_path : pstore_paths) {
+        if (access(pstore_path.c_str(), R_OK) == 0) {
+            std::string file_content;
+            if (android::base::ReadFileToString(pstore_path, &file_content)) {
+                pstore_content += "\n\n--- " + pstore_path + " ---\n" + file_content;
+            } else {
+                PLOG(WARNING) << "Failed to read pstore log: " << pstore_path;
+            }
+        }
+    }
+    if (pstore_content.empty()) {
+        LOG(ERROR) << "rollback detected but pstore is empty";
+        return;
+    }
+
+#ifdef __ANDROID__
+    if (!WaitForProperty("sys.boot_completed", "1")) {
+        LOG(ERROR) << "WaitForProperty failed";
+        return;
+    }
+    const std::string rollback_log_path = "/data/misc/update_engine_log/rollback_logs.txt";
+    // these logs should be retained from as early as possible in the boot process. Unfortunately it
+    // doesn't look like pstore can be read at the beginning of secondstage, so we'll either have to
+    // shift the mounting of sys/fs to earlier, or find the earliest point we can read pstore
+    // Append to the log file. Permissions 0644, owner root,
+    // group root.
+    if (!android::base::WriteStringToFile(pstore_content, rollback_log_path, 0644, 0, 0, true)) {
+        PLOG(ERROR) << "Failed to write rollback logs to " << rollback_log_path;
+    } else {
+        LOG(INFO) << "Copied rollback logs to " << rollback_log_path;
+    }
+#endif
+}
+
+// This function forks a subprocess to copy rollback logs. A subprocess is required to avoid
+// blocking init on WaitForProperty("sys.boot_completed", "1").
+static Result<void> SetCopyRollbackLogsAction(const BuiltinArguments& args) {
+    if (access(android::snapshot::SnapshotManager::GetGlobalRollbackIndicatorPath().c_str(),
+               F_OK) != 0) {
+        return {};
+    }
+    pid_t c_pid = fork();
+
+    if (c_pid == 0) {
+        GetAndCopyRollbackLogs();
+        _exit(EXIT_SUCCESS);
+    }
+    return {};
+}
+
 static void SecondStageBootMonitor(int timeout_sec) {
     auto cur_time = boot_clock::now().time_since_epoch();
     int cur_sec = std::chrono::duration_cast<std::chrono::seconds>(cur_time).count();
-    int extra_sec = timeout_sec <= cur_sec? 0 : timeout_sec - cur_sec;
+    int extra_sec = timeout_sec <= cur_sec ? 0 : timeout_sec - cur_sec;
     auto boot_timeout = std::chrono::seconds(extra_sec);
 
-    LOG(INFO) << "Started BootMonitorThread, expiring in "
-              << timeout_sec
+    LOG(INFO) << "Started BootMonitorThread, expiring in " << timeout_sec
               << " seconds from boot-up";
 
     if (!WaitForProperty("sys.boot_completed", "1", boot_timeout)) {
-        LOG(ERROR) << "BootMonitorThread: boot didn't complete in "
-                   << timeout_sec
+        LOG(ERROR) << "BootMonitorThread: boot didn't complete in " << timeout_sec
                    << " seconds. Trigger a panic!";
 
         // add a short delay for logs to be flushed out.
@@ -1048,6 +1136,11 @@ int SecondStageMain(int argc, char** argv) {
     InstallInitNotifier(&epoll);
     StartPropertyService(&property_fd);
 
+    // Initialize extra devices required during second stage init.
+    // This may spawn threads for background work. Hence, this should be after
+    // InstallSignalFdHandler() which needs to be called before spawning any threads.
+    InitExtraDevices();
+
     // If boot_timeout property has been set in a debug build, start the boot monitor
     if (GetBoolProperty("ro.debuggable", false)) {
         int timeout = GetIntProperty("ro.boot.boot_timeout", 0);
@@ -1101,7 +1194,7 @@ int SecondStageMain(int argc, char** argv) {
         }
     }
 
-    // This needs to happen before SetKptrRestrictAction, as we are trying to
+    // This needs to happen before kptr_restrict is raised, as we are trying to
     // open /proc/kallsyms while still being allowed to see the full addresses
     // (since init holds CAP_SYSLOG, and Linux boots with kptr_restrict=0). The
     // address visibility through the saved fd (more specifically, the backing
@@ -1110,14 +1203,15 @@ int SecondStageMain(int argc, char** argv) {
     Service::OpenAndSaveStaticKallsymsFd();
 
     am.QueueBuiltinAction(SetupCgroupsAction, "SetupCgroups");
-    am.QueueBuiltinAction(SetKptrRestrictAction, "SetKptrRestrict");
     am.QueueBuiltinAction(TestPerfEventSelinuxAction, "TestPerfEventSelinux");
     am.QueueEventTrigger("early-init");
     am.QueueBuiltinAction(ConnectEarlyStageSnapuserdAction, "ConnectEarlyStageSnapuserd");
 
     // Queue an action that waits for coldboot done so we know ueventd has set up all of /dev...
     am.QueueBuiltinAction(wait_for_coldboot_done_action, "wait_for_coldboot_done");
-    am.QueueBuiltinAction(CheckTradeInModeStatus, "CheckTradeInModeStatus");
+    if (!IsMicrodroid()) {
+        am.QueueBuiltinAction(CheckTradeInModeStatus, "CheckTradeInModeStatus");
+    }
     // ... so that we can start queuing up actions that require stuff from /dev.
     am.QueueBuiltinAction(SetMmapRndBitsAction, "SetMmapRndBits");
     Keychords keychords;
@@ -1134,6 +1228,8 @@ int SecondStageMain(int argc, char** argv) {
     // Trigger all the boot actions to get us started.
     am.QueueEventTrigger("init");
 
+    // Copy logs captures from pstore. Flush the logs when boot completes
+    am.QueueBuiltinAction(SetCopyRollbackLogsAction, "CopyRollbackLogs");
     // Don't mount filesystems or start core system services in charger mode.
     std::string bootmode = GetProperty("ro.bootmode", "");
     if (bootmode == "charger") {
@@ -1184,6 +1280,10 @@ int SecondStageMain(int argc, char** argv) {
         if (next_action_time != far_future) {
             epoll_timeout = std::chrono::ceil<std::chrono::milliseconds>(
                     std::max(next_action_time - boot_clock::now(), 0ns));
+        } else {
+            // If we are unlikely to do anything soon, release memory from the
+            // allocator.
+            mallopt(M_PURGE_ALL, 0);
         }
         auto epoll_result = epoll.Wait(epoll_timeout);
         if (!epoll_result.ok()) {

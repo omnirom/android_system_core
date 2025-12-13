@@ -17,3 +17,4 @@
 #pragma once
 
 bool has_memfd_support();
+int __ashmem_open();

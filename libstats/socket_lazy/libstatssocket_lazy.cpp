@@ -47,10 +47,14 @@ enum MethodIndex {
     k_AStatsEvent_writeBool,
     k_AStatsEvent_writeByteArray,
     k_AStatsEvent_writeString,
-    k_AStatsEvent_writeStringArray,
     k_AStatsEvent_writeAttributionChain,
     k_AStatsEvent_addBoolAnnotation,
     k_AStatsEvent_addInt32Annotation,
+    k_AStatsEvent_writeInt32Array,
+    k_AStatsEvent_writeInt64Array,
+    k_AStatsEvent_writeFloatArray,
+    k_AStatsEvent_writeBoolArray,
+    k_AStatsEvent_writeStringArray,
 
     // Stats Socket APIs in stats_socket.h.
     k_AStatsSocket_close,
@@ -114,10 +118,14 @@ static void InitializeOnce() {
     BIND_SYMBOL(AStatsEvent_writeBool);
     BIND_SYMBOL(AStatsEvent_writeByteArray);
     BIND_SYMBOL(AStatsEvent_writeString);
-    BIND_SYMBOL(AStatsEvent_writeStringArray);
     BIND_SYMBOL(AStatsEvent_writeAttributionChain);
     BIND_SYMBOL(AStatsEvent_addBoolAnnotation);
     BIND_SYMBOL(AStatsEvent_addInt32Annotation);
+    BIND_SYMBOL(AStatsEvent_writeInt32Array);
+    BIND_SYMBOL(AStatsEvent_writeInt64Array);
+    BIND_SYMBOL(AStatsEvent_writeFloatArray);
+    BIND_SYMBOL(AStatsEvent_writeBoolArray);
+    BIND_SYMBOL(AStatsEvent_writeStringArray);
 
     // Methods in stats_socket.h.
     BIND_SYMBOL(AStatsSocket_close);
@@ -190,11 +198,6 @@ void AStatsEvent_writeString(AStatsEvent* event, const char* value) {
     INVOKE_METHOD(AStatsEvent_writeString, event, value);
 }
 
-void AStatsEvent_writeStringArray(AStatsEvent* event, const char* const* elements,
-                                  size_t numElements) {
-    INVOKE_METHOD(AStatsEvent_writeStringArray, event, elements, numElements);
-}
-
 void AStatsEvent_writeAttributionChain(AStatsEvent* event, const uint32_t* uids,
                                        const char* const* tags, uint8_t numNodes) {
     INVOKE_METHOD(AStatsEvent_writeAttributionChain, event, uids, tags, numNodes);
@@ -206,6 +209,27 @@ void AStatsEvent_addBoolAnnotation(AStatsEvent* event, uint8_t annotationId, boo
 
 void AStatsEvent_addInt32Annotation(AStatsEvent* event, uint8_t annotationId, int32_t value) {
     INVOKE_METHOD(AStatsEvent_addInt32Annotation, event, annotationId, value);
+}
+
+void AStatsEvent_writeInt32Array(AStatsEvent* event, const int32_t* elements, size_t numElements) {
+    INVOKE_METHOD(AStatsEvent_writeInt32Array, event, elements, numElements);
+}
+
+void AStatsEvent_writeInt64Array(AStatsEvent* event, const int64_t* elements, size_t numElements) {
+    INVOKE_METHOD(AStatsEvent_writeInt64Array, event, elements, numElements);
+}
+
+void AStatsEvent_writeFloatArray(AStatsEvent* event, const float* elements, size_t numElements) {
+    INVOKE_METHOD(AStatsEvent_writeFloatArray, event, elements, numElements);
+}
+
+void AStatsEvent_writeBoolArray(AStatsEvent* event, const bool* elements, size_t numElements) {
+    INVOKE_METHOD(AStatsEvent_writeBoolArray, event, elements, numElements);
+}
+
+void AStatsEvent_writeStringArray(AStatsEvent* event, const char* const* elements,
+                                  size_t numElements) {
+    INVOKE_METHOD(AStatsEvent_writeStringArray, event, elements, numElements);
 }
 
 //

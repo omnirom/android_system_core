@@ -26,8 +26,14 @@
 #include <android-base/properties.h>
 #include <android-base/result.h>
 #include <android-base/unique_fd.h>
+#include <com_android_apex_flags.h>
 
+#include "apex_init_util.h"
 #include "util.h"
+
+using android::base::GetBoolProperty;
+using android::base::GetIntProperty;
+using android::base::SetProperty;
 
 namespace android {
 namespace init {
@@ -66,21 +72,34 @@ static std::string GetMountNamespaceId() {
     return ret;
 }
 
-static android::base::unique_fd bootstrap_ns_fd;
-static android::base::unique_fd default_ns_fd;
+[[clang::no_destroy]] static android::base::unique_fd bootstrap_ns_fd;
+[[clang::no_destroy]] static android::base::unique_fd default_ns_fd;
 
-static std::string bootstrap_ns_id;
-static std::string default_ns_id;
+[[clang::no_destroy]] static std::string bootstrap_ns_id;
+[[clang::no_destroy]] static std::string default_ns_id;
 
 }  // namespace
 
 // In case we have two sets of APEXes (non-updatable, updatable), we need two separate mount
 // namespaces.
 bool NeedsTwoMountNamespaces() {
-    if (IsRecoveryMode()) return false;
-    // In microdroid, there's only one set of APEXes in built-in directories include block devices.
-    if (IsMicrodroid()) return false;
-    return true;
+    static bool needs_two_mount_namespaces = []() {
+        if (IsRecoveryMode()) return false;
+        // In microdroid, there's only one set of APEXes in built-in directories include block
+        // devices.
+        if (IsMicrodroid()) return false;
+
+        if constexpr (com::android::apex::flags::mount_before_data()) {
+            // If apexd can mount APEXes before the data partition is ready, a single mount
+            // namespace is enough.
+            if (CanMountApexBeforeData()) {
+                return false;
+            }
+        }
+
+        return true;
+    }();
+    return needs_two_mount_namespaces;
 }
 
 bool SetupMountNamespaces() {
@@ -148,8 +167,8 @@ bool SetupMountNamespaces() {
     // activated by apexd. In the namespace for pre-apexd processes, small
     // number of essential APEXes (e.g. com.android.runtime) are activated.
     // In the namespace for post-apexd processes, all APEXes are activated.
-    bool success = true;
-    if (NeedsTwoMountNamespaces()) {
+    bool needs_two_mnt_ns = NeedsTwoMountNamespaces();
+    if (needs_two_mnt_ns) {
         // Creating a new namespace by cloning, saving, and switching back to
         // the original namespace.
         if (unshare(CLONE_NEWNS) == -1) {
@@ -186,8 +205,13 @@ bool SetupMountNamespaces() {
         default_ns_id = GetMountNamespaceId();
     }
 
+    if constexpr (com::android::apex::flags::mount_before_data()) {
+        // Expose the decision to other components like apexd
+        SetProperty("ro.init.mnt_ns.count", needs_two_mnt_ns ? "2" : "1");
+    }
+
     LOG(INFO) << "SetupMountNamespaces done";
-    return success;
+    return true;
 }
 
 // Switch the mount namespace of the current process from bootstrap to default OR from default to

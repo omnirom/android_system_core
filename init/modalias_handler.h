@@ -16,11 +16,14 @@
 
 #pragma once
 
-#include <string>
-#include <vector>
-
 #include <modprobe/modprobe.h>
+#include <modprobe/module_config.h>
+#include <modprobe/module_dependency_graph.h>
 
+#include <memory>
+#include <unordered_map>
+
+#include "thread_pool.h"
 #include "uevent.h"
 #include "uevent_handler.h"
 
@@ -34,7 +37,16 @@ class ModaliasHandler : public UeventHandler {
 
     void HandleUevent(const Uevent& uevent) override;
 
+    // Add a uevent to the dependency graph and Enqueue dependency-free modules to the thread pool.
+    void EnqueueUevent(const Uevent& uevent, ThreadPool& thread_pool) override;
+
   private:
+    ModaliasHandler(ModuleConfig config);
+
+    void EnqueueModule(ThreadPool& thread_pool, const std::string& module);
+
+    std::unordered_map<std::string, std::string> module_options_;
+    modprobe::ModuleDependencyGraph dependency_graph_;
     Modprobe modprobe_;
 };
 

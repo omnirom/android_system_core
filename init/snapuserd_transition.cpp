@@ -35,6 +35,8 @@
 #include <android-base/unique_fd.h>
 #include <cutils/sockets.h>
 #include <fs_avb/fs_avb.h>
+#include <fs_mgr.h>
+#include <fs_mgr/file_wait.h>
 #include <libsnapshot/snapshot.h>
 #include <private/android_filesystem_config.h>
 #include <procinfo/process_map.h>
@@ -62,7 +64,7 @@ static constexpr char kSnapuserdFirstStageInfoVar[] = "FIRST_STAGE_SNAPUSERD_INF
 static constexpr char kSnapuserdLabel[] = "u:object_r:snapuserd_exec:s0";
 static constexpr char kSnapuserdSocketLabel[] = "u:object_r:snapuserd_socket:s0";
 
-void LaunchFirstStageSnapuserd() {
+void LaunchFirstStageSnapuserd(bool use_ublk) {
     SocketDescriptor socket_desc;
     socket_desc.name = android::snapshot::kSnapuserdSocket;
     socket_desc.type = SOCK_STREAM;
@@ -85,10 +87,15 @@ void LaunchFirstStageSnapuserd() {
     if (pid == 0) {
         socket->Publish();
 
-        char arg0[] = "/system/bin/snapuserd";
-        char arg1[] = "-user_snapshot";
-        char* const argv[] = {arg0, arg1, nullptr};
-        if (execv(arg0, argv) < 0) {
+        std::vector<char*> argv;
+        argv.push_back(const_cast<char*>(kSnapuserdPath));
+        argv.push_back(const_cast<char*>("-user_snapshot"));
+        if (use_ublk) {
+            argv.push_back(const_cast<char*>("-ublk"));
+        }
+        argv.push_back(nullptr);
+
+        if (execv(argv[0], argv.data()) < 0) {
             PLOG(FATAL) << "Cannot launch snapuserd; execv failed";
         }
         _exit(127);
@@ -150,6 +157,32 @@ static void RelabelDeviceMapper() {
     }
 }
 
+static void RelabelUblkDevices() {
+    // Relabel ublk block devices: ublkb*
+    std::error_code ec;
+    for (auto& iter : std::filesystem::directory_iterator("/dev/block", ec)) {
+        const auto& path_str = iter.path().string();
+        if (android::base::StartsWith(path_str, "/dev/block/ublkb")) {
+            selinux_android_restorecon(path_str.c_str(), 0);
+        }
+    }
+    if (ec) {
+        LOG(WARNING) << "Error iterating /dev/block/ for ublkb* relabeling: " << ec.message();
+    }
+    // Relabel /dev/ublkc* control nodes
+    for (auto& iter : std::filesystem::directory_iterator("/dev", ec)) {
+        const auto& path_str = iter.path().string();
+        if (android::base::StartsWith(path_str, "/dev/ublkc")) {
+            selinux_android_restorecon(path_str.c_str(), 0);
+        }
+    }
+    if (ec) {
+        LOG(WARNING) << "Error iterating /dev for ublkc* relabeling: " << ec.message();
+    }
+    // Relabel the global ublk-control node
+    selinux_android_restorecon("/dev/ublk-control", 0);
+}
+
 static std::optional<int> GetRamdiskSnapuserdFd() {
     const char* fd_str = getenv(kSnapuserdFirstStageFdVar);
     if (!fd_str) {
@@ -172,13 +205,22 @@ void RestoreconRamdiskSnapuserd(int fd) {
 
 SnapuserdSelinuxHelper::SnapuserdSelinuxHelper(std::unique_ptr<SnapshotManager>&& sm, pid_t old_pid)
     : sm_(std::move(sm)), old_pid_(old_pid) {
-    // Only dm-user device names change during transitions, so the other
-    // devices are expected to be present.
+    // Expected to handle dm-user, ublk char and block, dm-linear on top of
+    // ublk block devices.
     sm_->SetUeventRegenCallback([this](const std::string& device) -> bool {
         if (android::base::StartsWith(device, "/dev/dm-user/")) {
             return block_dev_init_.InitDmUser(android::base::Basename(device));
         }
-        return true;
+        if (android::base::StartsWith(device, "/dev/block/dm-")) {
+            return block_dev_init_.InitDmDevice(device);
+        }
+        if (android::base::StartsWith(device, "/dev/block/ublkb")) {
+            return block_dev_init_.InitDmDevice(device);
+        }
+        if (android::base::StartsWith(device, "/dev/ublk")) {
+            return block_dev_init_.InitUblkMiscDevices(android::base::Basename(device));
+        }
+        return block_dev_init_.InitDevices({device});
     });
 }
 
@@ -227,6 +269,10 @@ void SnapuserdSelinuxHelper::StartTransition() {
     if (!sm_->PrepareSnapuserdArgsForSelinux(&argv_)) {
         LOG(FATAL) << "Could not perform selinux transition";
     }
+    // Check if we are going to use ublk path and save it so
+    // we can re-use decision than checking again.
+    using_ublk_ = std::any_of(argv_.begin(), argv_.end(),
+                              [](const std::string& arg) { return arg == "-ublk"; });
 }
 
 void SnapuserdSelinuxHelper::FinishTransition() {
@@ -237,7 +283,9 @@ void SnapuserdSelinuxHelper::FinishTransition() {
     selinux_android_restorecon("/dev/urandom", 0);
     selinux_android_restorecon("/dev/kmsg", 0);
     selinux_android_restorecon("/dev/dm-user", SELINUX_ANDROID_RESTORECON_RECURSE);
-
+    if (using_ublk_) {
+        RelabelUblkDevices();
+    }
     RelaunchFirstStageSnapuserd();
 
     if (munlockall() < 0) {
@@ -308,12 +356,72 @@ bool SnapuserdSelinuxHelper::TestSnapuserdIsReady() {
     return false;
 }
 
+static bool ReadMessageFromSocket(int sockfd, std::string* message) {
+    message->clear();
+
+    char buffer[4096];  // Adjust buffer size as needed
+
+    ssize_t bytes_read = TEMP_FAILURE_RETRY(recv(sockfd, buffer, sizeof(buffer), 0));
+    if (bytes_read < 0) {
+        PLOG(ERROR) << "recv() failed";
+        return false;
+    } else if (bytes_read == 0) {
+        LOG(INFO) << "recv() returned 0, peer closed connection";
+        return false;
+    }
+    message->assign(buffer, bytes_read);
+    return true;
+}
+
+void SnapuserdSelinuxHelper::ProcessSnapuserdUeventRequests(int request_fd) {
+    std::string message;
+    auto start_time = std::chrono::steady_clock::now();
+    auto end_time = start_time + std::chrono::seconds(30);
+
+    LOG(INFO) << "Processing UBLK device requests on fd: " << request_fd;
+    // TODOUBLK: b/414812023
+    // Consider LOG(FATAL) for early failure.
+    while (std::chrono::steady_clock::now() < end_time) {
+        if (!ReadMessageFromSocket(request_fd, &message)) {
+            LOG(ERROR) << "Failed receiving message on request socketpair from fd: " << request_fd;
+            break;
+        }
+
+        if (message.find("DONE") != std::string::npos) {
+            LOG(INFO) << "Received DONE message from snapuserd for UBLK requests on fd: "
+                      << request_fd;
+            break;
+        }
+
+        if (!message.empty()) {
+            LOG(INFO) << "Received UBLK device request: \"" << message
+                      << "\" on fd: " << request_fd;
+            auto timeout_ms = 500ms;
+            if (android::base::StartsWith(message, "/dev/ublkc")) {
+                block_dev_init_.InitUblkMiscDevices(android::base::Basename(message));
+                android::fs_mgr::WaitForFile(message, timeout_ms);
+            } else if (android::base::StartsWith(message, "/dev/block/ublk")) {
+                block_dev_init_.InitDmDevice(message);
+                android::fs_mgr::WaitForFile(message, timeout_ms);
+            } else {
+                LOG(WARNING) << "Received unknown UBLK device request: \"" << message
+                             << "\" on fd: " << request_fd;
+            }
+        }
+    }
+
+    if (std::chrono::steady_clock::now() >= end_time && message.find("DONE") == std::string::npos) {
+        LOG(ERROR) << "Timed out waiting for DONE message on UBLK request socketpair from fd: "
+                   << request_fd;
+    }
+}
+
 void SnapuserdSelinuxHelper::RelaunchFirstStageSnapuserd() {
     if (!sm_->DetachFirstStageSnapuserdForSelinux()) {
         LOG(FATAL) << "Could not perform selinux transition";
     }
 
-    KillFirstStageSnapuserd(old_pid_);
+    SignalFirstStageSnapuserd(old_pid_, SIGTERM);
 
     auto fd = GetRamdiskSnapuserdFd();
     if (!fd) {
@@ -322,15 +430,32 @@ void SnapuserdSelinuxHelper::RelaunchFirstStageSnapuserd() {
     unsetenv(kSnapuserdFirstStageFdVar);
 
     RestoreconRamdiskSnapuserd(fd.value());
+    int sockets[2] = {-1, -1};
+
+    if (using_ublk_) {
+        // Create a socket pair for snapuserd to request udev event assistance from init.
+        // In early boot stages, ueventd might not be ready, so init helps create devices.
+        // Snapuserd sends device paths it needs; "DONE" signals completion.
+
+        if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == -1) {
+            PLOG(FATAL) << "socketpair failed";
+        }
+    }
 
     pid_t pid = fork();
     if (pid < 0) {
+        if (using_ublk_) {
+            close(sockets[0]);
+            close(sockets[1]);
+        }
         PLOG(FATAL) << "Fork to relaunch snapuserd failed";
     }
     if (pid > 0) {
         // We don't need the descriptor anymore, and it should be closed to
         // avoid leaking into subprocesses.
         close(fd.value());
+
+        if (using_ublk_) close(sockets[1]);
 
         setenv(kSnapuserdFirstStagePidVar, std::to_string(pid).c_str(), 1);
 
@@ -343,13 +468,40 @@ void SnapuserdSelinuxHelper::RelaunchFirstStageSnapuserd() {
         if (!android::base::WriteStringToFile(oom_str, oom_file)) {
             PLOG(ERROR) << "couldn't write oom_score_adj to snapuserd daemon with pid: " << pid;
         }
+        if (using_ublk_) {
+            // When UBLK is enabled for snapshots, the newly launched snapuserd instance
+            // requires assistance from init to create the necessary UBLK device nodes
+            // (e.g., /dev/ublkc* for control, /dev/block/ublkb* for block devices).
+            // This is because ueventd is not be fully operational/
+            //
+            // To handle this, a socket pair is used:
+            // - snapuserd (child) writes requested device paths to its end of the socket.
+            // - init (parent) reads these paths from its end (sockets[0]).
+            // - init then uses BlockDevInitializer to create/initialize these device nodes
+            //   and waits for them to appear.
+            // This communication continues until snapuserd sends a "DONE" message,
+            // indicating all its required UBLK devices have been requested.
+            // The ProcessSnapuserdUeventRequests function encapsulates this interaction.
+            ProcessSnapuserdUeventRequests(sockets[0]);
+            close(sockets[0]);  // Served its purpose
+            LOG(INFO) << "Finished processing uevent requests, socket closed.";
+            // relabel newly created devices
+            RelabelUblkDevices();
+        }
 
         if (!TestSnapuserdIsReady()) {
             PLOG(FATAL) << "snapuserd daemon failed to launch";
         } else {
             LOG(INFO) << "snapuserd daemon is up and running";
         }
-
+        if (using_ublk_) {
+            // When using ublk for snapshots, the original first-stage snapuserd (old_pid_)
+            // does not automatically terminate when its device mapper tables are switched
+            // by the newly launched snapuserd instance. This behavior differs
+            // from snapuserd instances that use dm-user. Therefore, an explicit SIGKILL
+            // is necessary to ensure the old instance is terminated.
+            SignalFirstStageSnapuserd(old_pid_, SIGKILL);
+        }
         return;
     }
 
@@ -357,7 +509,11 @@ void SnapuserdSelinuxHelper::RelaunchFirstStageSnapuserd() {
     if (fcntl(fd.value(), F_SETFD, FD_CLOEXEC) < 0) {
         PLOG(FATAL) << "fcntl FD_CLOEXEC failed for snapuserd fd";
     }
-
+    if (using_ublk_) {
+        close(sockets[0]);
+        std::string fd_arg = android::base::StringPrintf("--fd_num=%d", sockets[1]);
+        argv_.push_back(fd_arg);
+    }
     std::vector<char*> argv;
     for (auto& arg : argv_) {
         argv.emplace_back(arg.data());
@@ -388,14 +544,13 @@ std::unique_ptr<SnapuserdSelinuxHelper> SnapuserdSelinuxHelper::CreateIfNeeded()
     return std::make_unique<SnapuserdSelinuxHelper>(std::move(sm), old_pid.value());
 }
 
-void KillFirstStageSnapuserd(pid_t pid) {
-    if (kill(pid, SIGTERM) < 0 && errno != ESRCH) {
-        LOG(ERROR) << "Kill snapuserd pid failed: " << pid;
+void SignalFirstStageSnapuserd(pid_t pid, int signal) {
+    if (kill(pid, signal) < 0 && errno != ESRCH) {
+        LOG(ERROR) << "Signal snapuserd pid failed: " << pid;
     } else {
-        LOG(INFO) << "Sent SIGTERM to snapuserd process " << pid;
+        LOG(INFO) << "Sent signal " << signal << " to snapuserd process " << pid;
     }
 }
-
 void CleanupSnapuserdSocket() {
     auto socket_path = ANDROID_SOCKET_DIR "/"s + android::snapshot::kSnapuserdSocket;
     if (access(socket_path.c_str(), F_OK) != 0) {

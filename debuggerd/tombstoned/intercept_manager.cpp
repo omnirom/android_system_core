@@ -56,6 +56,10 @@ static void intercept_close_cb(evutil_socket_t sockfd, short event, void* arg) {
   const char* reason = (event & EV_TIMEOUT) ? "due to timeout" : "due to input";
   LOG(INFO) << "intercept for pid " << intercept->pid << " and type " << intercept->dump_type
             << " terminated: " << reason;
+  if (event & EV_TIMEOUT) {
+    InterceptResponse response = {.status = InterceptStatus::kTimeout};
+    TEMP_FAILURE_RETRY(write(intercept->sockfd, &response, sizeof(response)));
+  }
 }
 
 void InterceptManager::Unregister(Intercept* intercept) {
@@ -260,8 +264,7 @@ bool InterceptManager::FindIntercept(pid_t pid, DebuggerdDumpType dump_type,
 
   LOG(INFO) << "found intercept fd " << intercept->output_fd.get() << " for pid " << pid
             << " and type " << intercept->dump_type;
-  InterceptResponse response = {};
-  response.status = InterceptStatus::kStarted;
+  InterceptResponse response = {.status = InterceptStatus::kStarted};
   TEMP_FAILURE_RETRY(write(intercept->sockfd, &response, sizeof(response)));
   *out_fd = std::move(intercept->output_fd);
 

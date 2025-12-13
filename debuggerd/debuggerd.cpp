@@ -92,8 +92,11 @@ int main(int argc, char* argv[]) {
   }
 
   // unfreeze if pid is frozen.
-  SetProcessProfiles(proc_info.uid, proc_info.pid, {"Unfrozen"});
-  // we don't restore the frozen state as this is considered a benign change.
+  // Skip this in microdroid because microdroid doesn't have cgroups.
+  if (!is_microdroid()) {
+    SetProcessProfiles(proc_info.uid, proc_info.pid, {"Unfrozen"});
+    // we don't restore the frozen state as this is considered a benign change.
+  }
 
   unique_fd output_fd(fcntl(STDOUT_FILENO, F_DUPFD_CLOEXEC, 0));
   if (output_fd.get() == -1) {

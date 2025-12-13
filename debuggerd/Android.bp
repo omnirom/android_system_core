@@ -16,6 +16,7 @@ cc_defaults {
         "-Os",
         "-fno-finite-loops",
         "-DANDROID_DEBUGGABLE=0",
+        "-DANDROID_DISABLE_TLS_FOR_LINKER=1",
     ],
 
     local_include_dirs: ["include"],
@@ -216,7 +217,7 @@ cc_library {
 
     whole_static_libs: [
         "libtombstone_proto",
-        "libprotobuf-cpp-lite",
+        "libprotobuf-cpp-lite-notls-for-linker",
     ],
 
     shared_libs: [
@@ -278,7 +279,7 @@ cc_library_static {
         "gwp_asan_crash_handler",
         "libtombstone_proto",
         "libprocinfo",
-        "libprotobuf-cpp-lite",
+        "libprotobuf-cpp-lite-notls-for-linker",
         "libscudo",
     ],
 
@@ -341,7 +342,7 @@ cc_binary {
         "libbase",
         "libdebuggerd_tombstone_proto_to_text",
         "liblog",
-        "libprotobuf-cpp-lite",
+        "libprotobuf-cpp-lite-notls-for-linker",
         "libtombstone_proto",
     ],
 }
@@ -465,7 +466,7 @@ cc_binary {
         "libcutils",
 
         "libtombstone_proto",
-        "libprotobuf-cpp-lite",
+        "libprotobuf-cpp-lite-notls-for-linker",
 
         "libnative_bridge_guest_state_accessor",
     ],
@@ -581,6 +582,41 @@ prebuilt_etc {
     },
 }
 
+prebuilt_etc {
+    name: "crash_dump.no_mmap_mprotect_prctl.policy",
+    sub_dir: "seccomp_policy",
+    filename_from_src: true,
+    arch: {
+        arm: {
+            src: "seccomp_policy/crash_dump.no_mmap_mprotect_prctl.arm.policy",
+            required: [
+                "crash_dump.policy_no_mmap_mprotect_prctl_other",
+            ],
+        },
+        arm64: {
+            src: "seccomp_policy/crash_dump.no_mmap_mprotect_prctl.arm64.policy",
+            required: [
+                "crash_dump.policy_no_mmap_mprotect_prctl_other",
+            ],
+        },
+        riscv64: {
+            src: "seccomp_policy/crash_dump.no_mmap_mprotect_prctl.riscv64.policy",
+        },
+        x86: {
+            src: "seccomp_policy/crash_dump.no_mmap_mprotect_prctl.x86.policy",
+            required: [
+                "crash_dump.policy_no_mmap_mprotect_prctl_other",
+            ],
+        },
+        x86_64: {
+            src: "seccomp_policy/crash_dump.no_mmap_mprotect_prctl.x86_64.policy",
+            required: [
+                "crash_dump.policy_no_mmap_mprotect_prctl_other",
+            ],
+        },
+    },
+}
+
 // This installs the "other" architecture (so 32-bit on 64-bit device).
 prebuilt_etc {
     name: "crash_dump.policy_other",
@@ -601,6 +637,29 @@ prebuilt_etc {
         },
         x86_64: {
             src: "seccomp_policy/crash_dump.x86.policy",
+        },
+    },
+}
+
+prebuilt_etc {
+    name: "crash_dump.policy_no_mmap_mprotect_prctl_other",
+    sub_dir: "seccomp_policy",
+    filename_from_src: true,
+    arch: {
+        arm: {
+            src: "seccomp_policy/crash_dump.no_mmap_mprotect_prctl.arm64.policy",
+        },
+        arm64: {
+            src: "seccomp_policy/crash_dump.no_mmap_mprotect_prctl.arm.policy",
+        },
+        riscv64: {
+            enabled: false,
+        },
+        x86: {
+            src: "seccomp_policy/crash_dump.no_mmap_mprotect_prctl.x86_64.policy",
+        },
+        x86_64: {
+            src: "seccomp_policy/crash_dump.no_mmap_mprotect_prctl.x86.policy",
         },
     },
 }

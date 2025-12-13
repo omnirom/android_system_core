@@ -25,8 +25,8 @@
 namespace android {
 namespace fs_mgr {
 
+std::string ValidateAndSerializeMetadata(const LpMetadata& metadata);
 std::string SerializeGeometry(const LpMetadataGeometry& input);
-std::string SerializeMetadata(const LpMetadata& input);
 
 // These variants are for testing only. The path-based functions should be used
 // for actual operation, so that open() is called with the correct flags.

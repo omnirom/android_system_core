@@ -18,6 +18,14 @@ package {
     default_applicable_licenses: ["system_core_init_license"],
 }
 
+// LINT.IfChange
+// N.B. keep this in sync with EXPORT_GLOBAL_HWASAN_OPTIONS in system/core/rootdir/Android.bp
+GLOBAL_HWASAN_OPTIONS = select(soong_config_variable("ANDROID", "HWASAN_ENABLED"), {
+    true: ["-DHWASAN_OPTIONS=heap_history_size=1023,stack_history_size=512,export_memory_stats=0,max_malloc_fill_size=131072,malloc_fill_byte=0"],
+    default: [],
+})
+// LINT.ThenChange(/rootdir/Android.bp)
+
 // Added automatically by a large-scale-change
 // See: http://go/android-license-faq
 license {
@@ -57,6 +65,9 @@ init_device_sources = [
     "block_dev_initializer.cpp",
     "bootchart.cpp",
     "builtins.cpp",
+    "coldboot.cpp",
+    "coldboot_runner_subprocess.cpp",
+    "coldboot_runner_thread_pool.cpp",
     "devices.cpp",
     "firmware_handler.cpp",
     "first_stage_console.cpp",
@@ -81,7 +92,9 @@ init_device_sources = [
     "snapuserd_transition.cpp",
     "switch_root.cpp",
     "tradeinmode.cpp",
+    "thread_pool.cpp",
     "uevent_listener.cpp",
+    "uevent_dependency_graph.cpp",
     "ueventd.cpp",
     "ueventd_parser.cpp",
     "vendor_init.cpp",
@@ -164,6 +177,7 @@ libinit_cc_defaults {
         },
     },
     static_libs: [
+        "libapexd_flags",
         "libavb",
         "libavf_cc_flags",
         "libbootloader_message",
@@ -178,7 +192,6 @@ libinit_cc_defaults {
         "libsnapshot_cow",
         "libsnapshot_init",
         "libxml2",
-        "lib_apex_manifest_proto_lite",
         "update_metadata-protos",
         "libgenfslabelsversion.ffi",
     ],
@@ -237,6 +250,9 @@ cc_defaults {
         type: "lite",
         export_proto_headers: true,
     },
+    static_libs: [
+        "libueventd_flags",
+    ],
 
     target: {
         recovery: {
@@ -268,6 +284,10 @@ cc_library_static {
     ],
     recovery_available: false,
     cflags: ["-DMICRODROID=1"],
+    cppflags: [
+        "-UWORLD_WRITABLE_KMSG",
+        "-DWORLD_WRITABLE_KMSG=1",
+    ],
 }
 
 phony {
@@ -283,9 +303,7 @@ phony {
 cc_defaults {
     name: "init_second_stage_defaults",
     stem: "init",
-    defaults: [
-        "init_defaults",
-    ],
+    defaults: ["init_defaults"],
     srcs: ["main.cpp"],
     symlinks: ["ueventd"],
 }
@@ -337,6 +355,10 @@ cc_binary {
     ],
     static_libs: ["libinit.microdroid"],
     cflags: ["-DMICRODROID=1"],
+    cppflags: [
+        "-UWORLD_WRITABLE_KMSG",
+        "-DWORLD_WRITABLE_KMSG=1",
+    ],
     no_full_install: true,
     visibility: ["//packages/modules/Virtualization/build/microdroid"],
 }
@@ -378,6 +400,7 @@ init_first_stage_cc_defaults {
     ],
 
     static_libs: [
+        "libapexd_flags",
         "libfs_avb",
         "libavf_cc_flags",
         "libfs_mgr",
@@ -415,6 +438,7 @@ init_first_stage_cc_defaults {
         "-Wall",
         "-Wextra",
         "-Wno-unused-parameter",
+        "-Wexit-time-destructors",
         "-Werror",
         "-DALLOW_FIRST_STAGE_CONSOLE=0",
         "-DALLOW_LOCAL_PROP_OVERRIDE=0",
@@ -425,7 +449,7 @@ init_first_stage_cc_defaults {
         "-DSHUTDOWN_ZERO_TIMEOUT=0",
         "-DLOG_UEVENTS=0",
         "-DSEPOLICY_VERSION=30", // TODO(jiyong): externalize the version number
-    ],
+    ] + GLOBAL_HWASAN_OPTIONS,
 
     product_variables: {
         debuggable: {
@@ -477,9 +501,7 @@ init_first_stage_cc_defaults {
 
 cc_binary {
     name: "init_first_stage",
-    defaults: [
-        "init_first_stage_defaults",
-    ],
+    defaults: ["init_first_stage_defaults"],
 }
 
 cc_binary {
@@ -488,7 +510,11 @@ cc_binary {
         "avf_build_flags_cc",
         "init_first_stage_defaults",
     ],
-    cflags: ["-DMICRODROID=1"],
+    cflags: [
+        "-DMICRODROID=1",
+        "-UWORLD_WRITABLE_KMSG",
+        "-DWORLD_WRITABLE_KMSG=1",
+    ],
     no_full_install: true,
 }
 
@@ -523,7 +549,10 @@ cc_test {
         "rlimit_parser_test.cpp",
         "service_test.cpp",
         "subcontext_test.cpp",
+        "thread_pool_test.cpp",
         "tokenizer_test.cpp",
+        "uevent_dependency_graph.cpp",
+        "uevent_dependency_graph_test.cpp",
         "ueventd_parser_test.cpp",
         "ueventd_test.cpp",
         "util_test.cpp",
@@ -611,18 +640,18 @@ cc_defaults {
         "-Werror",
     ],
     static_libs: [
-        "libbase",
         "libfstab",
-        "libselinux",
         "libpropertyinfoserializer",
         "libpropertyinfoparser",
     ],
     whole_static_libs: ["libcap"],
     shared_libs: [
+        "libbase",
         "libcutils",
         "liblog",
         "libprocessgroup",
         "libprotobuf-cpp-lite",
+        "libselinux",
     ],
     proto: {
         type: "lite",
@@ -703,4 +732,16 @@ phony {
         true: [],
         default: ["init_first_stage"],
     }),
+}
+
+aconfig_declarations {
+    name: "ueventd_flags",
+    package: "com.android.ueventd.flags",
+    srcs: ["ueventd.aconfig"],
+    container: "system",
+}
+
+cc_aconfig_library {
+    name: "libueventd_flags",
+    aconfig_declarations: "ueventd_flags",
 }

@@ -32,4 +32,7 @@ cc_test {
         "-Wall",
         "-Werror",
     ],
+    test_suites: [
+        "device-pixel-tests",
+    ],
 }

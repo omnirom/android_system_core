@@ -44,8 +44,7 @@ fn recv_small_buf() {
     assert_eq!(
         Some(libc::EMSGSIZE),
         err.raw_os_error(),
-        "Unexpected error err when receiving incoming message: {:?}",
-        err,
+        "Unexpected error err when receiving incoming message: {err:?}",
     );
 }
 

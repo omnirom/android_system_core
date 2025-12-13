@@ -70,8 +70,8 @@ const android::fs_mgr::IPartitionOpener& DeviceInfo::GetPartitionOpener() const 
     return opener_;
 }
 
-std::string DeviceInfo::GetSuperDevice(uint32_t slot) const {
-    return fs_mgr_get_super_partition_name(slot);
+std::string DeviceInfo::GetSuperDevice() const {
+    return fs_mgr_get_super_partition_name();
 }
 
 bool DeviceInfo::IsOverlayfsSetup() const {
@@ -84,10 +84,6 @@ bool DeviceInfo::EnsureBootHal() {
         auto hal = BootControlClient::WaitForService();
         if (!hal) {
             LOG(ERROR) << "Could not find IBootControl HAL";
-            return false;
-        }
-        if (hal->GetVersion() < BootControlVersion::BOOTCTL_V1_1) {
-            LOG(ERROR) << "Could not find IBootControl 1.1 HAL";
             return false;
         }
         boot_control_ = std::move(hal);

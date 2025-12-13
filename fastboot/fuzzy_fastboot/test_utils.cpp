@@ -92,7 +92,7 @@ std::unordered_map<std::string, std::string> ParseArgs(int argc, char** argv,
     // We ignore any gtest stuff
     std::unordered_map<std::string, std::string> ret;
 
-    for (int i = 1; i < argc - 1; i++) {
+    for (int i = 1; i < argc; i++) {
         std::string arg(argv[i]);
 
         const std::string gtest_start("--gtest");

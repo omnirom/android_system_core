@@ -328,5 +328,22 @@ TEST(device_handler, SysfsPermissionsMatchWithSubsystemBus) {
     EXPECT_EQ(1001U, permissions.gid());
 }
 
+TEST(device_handler, SysfsPermissionsMatchWildcardPrefix) {
+    // Wildcard+Prefix example
+    // /sys/class/typec/port*/port*  priority   0660  root    system
+    SysfsPermissions permissions("/sys/class/typec/port*/port*", "priority", 0660, 0, 1000, false);
+    EXPECT_TRUE(permissions.MatchWithSubsystem("/sys/class/typec/port0/port0.0", "typec"));
+    EXPECT_TRUE(
+            permissions.MatchWithSubsystem("/sys/class/typec/port0-cable/port0-plug0", "typec"));
+    EXPECT_FALSE(permissions.MatchWithSubsystem("/sys/class/typec/port0-cable/physical_location",
+                                                "typec"));
+    // FNM_PATHNAME doesn't match '/' with *
+    EXPECT_FALSE(
+            permissions.MatchWithSubsystem("/sys/class/typec/port0/cable/port0-plug0", "typec"));
+    EXPECT_EQ(0660U, permissions.perm());
+    EXPECT_EQ(0U, permissions.uid());
+    EXPECT_EQ(1000U, permissions.gid());
+}
+
 }  // namespace init
 }  // namespace android

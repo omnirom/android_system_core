@@ -71,7 +71,7 @@ ssize_t ipc_get_msg(struct storage_msg *msg, void *req_buf, size_t req_buf_len)
 
     assert(tipc_fd >=  0);
 
-    rc = readv(tipc_fd, iovs, 2);
+    rc = TEMP_FAILURE_RETRY(readv(tipc_fd, iovs, 2));
     if (rc < 0) {
         ALOGE("failed to read request: %s\n", strerror(errno));
         return rc;
@@ -102,7 +102,7 @@ int ipc_respond(struct storage_msg *msg, void *out, size_t out_size)
 
     msg->cmd |= STORAGE_RESP_BIT;
 
-    rc = writev(tipc_fd, iovs, out ? 2 : 1);
+    rc = TEMP_FAILURE_RETRY(writev(tipc_fd, iovs, out ? 2 : 1));
     if (rc < 0) {
         ALOGE("error sending response 0x%x: %s\n",
               msg->cmd, strerror(errno));

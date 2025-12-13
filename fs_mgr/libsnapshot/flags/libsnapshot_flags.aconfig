@@ -1,0 +1,11 @@
+package: "com.android.libsnapshot"
+container: "system"
+
+flag {
+  name: "vabc_with_ublk_support"
+  is_exported: false
+  namespace: "android_kernel"
+  description: "Enable ublk support for Virtual A/B Compression"
+  bug: "362683283"
+  is_fixed_read_only: true
+}

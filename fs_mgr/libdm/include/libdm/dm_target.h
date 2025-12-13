@@ -80,6 +80,10 @@ class DmTarget {
     // must implement this, for it to be used on a device.
     std::string Serialize() const;
 
+    // Returns a string for debugging purposes that contains the target name, start sector and
+    // parameters.
+    std::string DebugString() const;
+
     virtual bool Valid() const { return true; }
 
   protected:
@@ -146,6 +150,7 @@ class DmTargetVerity final : public DmTarget {
     void SetVerityMode(const std::string& mode);
     void IgnoreZeroBlocks();
     void CheckAtMostOnce();
+    void TryVerifyInTasklet();
 
     std::string name() const override { return "verity"; }
     std::string GetParameterString() const override;
@@ -309,7 +314,7 @@ class DmTargetDefaultKey final : public DmTarget {
           blockdev_(blockdev),
           start_sector_(start_sector) {}
 
-    std::string name() const override { return kName; }
+    std::string name() const override { return "default-key"; }
     bool Valid() const override;
     std::string GetParameterString() const override;
     void SetUseLegacyOptionsFormat() { use_legacy_options_format_ = true; }
@@ -317,8 +322,6 @@ class DmTargetDefaultKey final : public DmTarget {
     void SetWrappedKeyV0() { is_hw_wrapped_ = true; }
 
   private:
-    inline static const std::string kName = "default-key";
-
     std::string cipher_;
     std::string key_;
     std::string blockdev_;

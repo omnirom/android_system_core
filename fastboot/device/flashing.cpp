@@ -185,14 +185,10 @@ int Flash(FastbootDevice* device, const std::string& partition_name) {
         return -EINVAL;
     }
     uint64_t block_device_size = get_block_device_size(handle.fd());
-    if (data.size() > block_device_size) {
-        LOG(ERROR) << "Cannot flash " << data.size() << " bytes to block device of size "
-                   << block_device_size;
-        return -EOVERFLOW;
-    } else if (data.size() < block_device_size &&
-               (partition_name == "boot" || partition_name == "boot_a" ||
-                partition_name == "boot_b" || partition_name == "init_boot" ||
-                partition_name == "init_boot_a" || partition_name == "init_boot_b")) {
+    if (data.size() < block_device_size &&
+        (partition_name == "boot" || partition_name == "boot_a" || partition_name == "boot_b" ||
+         partition_name == "init_boot" || partition_name == "init_boot_a" ||
+         partition_name == "init_boot_b")) {
         CopyAVBFooter(&data, block_device_size);
     }
     if (android::base::GetProperty("ro.system.build.type", "") != "user") {

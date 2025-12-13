@@ -32,6 +32,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/sysinfo.h>
+#include <sys/utsname.h>
 #include <time.h>
 
 #include <map>
@@ -66,6 +67,10 @@
 #include <procinfo/process.h>
 #include <unwindstack/AndroidUnwinder.h>
 #include <unwindstack/Error.h>
+#include <unwindstack/MachineArm.h>
+#include <unwindstack/MachineArm64.h>
+#include <unwindstack/MachineX86.h>
+#include <unwindstack/MachineX86_64.h>
 #include <unwindstack/MapInfo.h>
 #include <unwindstack/Maps.h>
 #include <unwindstack/Regs.h>
@@ -581,6 +586,27 @@ static void dump_registers(unwindstack::AndroidUnwinder* unwinder,
       *thread.add_memory_dump() = std::move(dump);
     }
   });
+#if defined(__aarch64__)
+  Register esr;
+  esr.set_name("esr");
+  esr.set_u64(regs->GetExtraRegister(unwindstack::Arm64Reg::ARM64_EXTRA_REG_ESR));
+  *thread.add_registers() = esr;
+#elif defined(__arm__)
+  Register error_code;
+  error_code.set_name("error_code");
+  error_code.set_u64(regs->GetExtraRegister(unwindstack::ArmReg::ARM_EXTRA_REG_ERROR_CODE));
+  *thread.add_registers() = error_code;
+#elif defined(__i386__)
+  Register err;
+  err.set_name("err");
+  err.set_u64(regs->GetExtraRegister(unwindstack::X86Reg::X86_EXTRA_REG_ERR));
+  *thread.add_registers() = err;
+#elif defined(__x86_64__)
+  Register err;
+  err.set_name("err");
+  err.set_u64(regs->GetExtraRegister(unwindstack::X86_64Reg::X86_64_EXTRA_REG_ERR));
+  *thread.add_registers() = err;
+#endif
 }
 
 static void dump_thread_backtrace(std::vector<unwindstack::FrameData>& frames, Thread& thread) {
@@ -852,6 +878,11 @@ void engrave_tombstone_proto(Tombstone* tombstone, unwindstack::AndroidUnwinder*
   result.set_revision(android::base::GetProperty("ro.revision", "unknown"));
   result.set_timestamp(get_timestamp());
 
+  utsname buf;
+  if (uname(&buf) == 0) {
+    result.set_kernel_release(buf.release);
+  }
+
   const ThreadInfo& target_thread = threads.at(target_tid);
   result.set_pid(target_thread.pid);
   result.set_tid(target_thread.tid);
@@ -875,6 +906,7 @@ void engrave_tombstone_proto(Tombstone* tombstone, unwindstack::AndroidUnwinder*
   result.set_page_size(getpagesize());
   result.set_has_been_16kb_mode(android::base::GetBoolProperty("ro.misctrl.16kb_before", false));
 
+  result.set_executable_name(target_thread.executable_name);
   auto cmd_line = result.mutable_command_line();
   for (const auto& arg : target_thread.command_line) {
     *cmd_line->Add() = arg;

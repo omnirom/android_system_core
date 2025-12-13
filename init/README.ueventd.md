@@ -211,3 +211,31 @@ For example
     parallel_restorecon_dir /sys/devices
     parallel_restorecon_dir /sys/devices/platform
     parallel_restorecon_dir /sys/devices/platform/soc
+
+## Parallel uevent main loop
+--------
+After coldboot is complete, ueventd enters its main loop. The main loop handles all uevents that
+happen after coldboot. This main loop is not parallelized by default unlike the coldboot process
+described above. You can optionally parallelize this main loop by.
+
+    parallel_ueventd_main_loop enabled
+
+By default this spawns the same number of threads as the number of the logical cores. You can
+optionally tweak the number of workers.
+
+    parallel_ueventd_main_loop_max_workers 2
+
+There are two motivations you might want to try parallelizing the main loop; boot time and kernel
+module initialization time.
+
+The main loop handles events that occur when you modify device states (e.g. plug/unplug a new
+device), but it also processes uevents necessary for the boot process such as uevents related to
+`/data` partitions. These uevents block the boot process, so parallelizing the main loop might help
+the boot time for the same reason as parallel restorecon does in coldboot (e.g. labeling sysfs nodes
+that cannot be migrated to genfscon).
+
+Some kernel modules take a perceptible time for initialization. If a device is supposed to
+initialize multiple number of such kernel modules, parallelizing them reduces the total
+initialization time. In addition, these kernel module initializations can block following events for
+`/data` block devices until they complete. In that case, this also contributes to making the boot
+time faster.

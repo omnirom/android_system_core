@@ -22,57 +22,33 @@
 #include <android-base/unique_fd.h>
 
 #include <modprobe/modprobe.h>
+#include <modprobe/utils.h>
 
-std::string Modprobe::GetKernelCmdline(void) {
-    std::string cmdline;
-    if (!android::base::ReadFileToString("/proc/cmdline", &cmdline)) {
-        return "";
-    }
-    return cmdline;
-}
+using android::modprobe::CanonicalizeModulePath;
+using android::modprobe::InitModule;
 
 bool Modprobe::Insmod(const std::string& path_name, const std::string& parameters) {
-    android::base::unique_fd fd(
-            TEMP_FAILURE_RETRY(open(path_name.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC)));
-    if (fd == -1) {
-        PLOG(ERROR) << "Could not open module '" << path_name << "'";
-        return false;
-    }
+    auto canonical_name = CanonicalizeModulePath(path_name);
+    android::base::Result<void> res = InitModule(path_name, module_options_, parameters);
 
-    auto canonical_name = MakeCanonical(path_name);
-    std::string options = "";
-    auto options_iter = module_options_.find(canonical_name);
-    if (options_iter != module_options_.end()) {
-        options = options_iter->second;
-    }
-    if (!parameters.empty()) {
-        options = options + " " + parameters;
-    }
-
-    LOG(INFO) << "Loading module " << path_name << " with args '" << options << "'";
-    int ret = syscall(__NR_finit_module, fd.get(), options.c_str(), 0);
-    if (ret != 0) {
-        if (errno == EEXIST) {
-            // Module already loaded
-            std::lock_guard guard(module_loaded_lock_);
-            module_loaded_paths_.emplace(path_name);
-            module_loaded_.emplace(canonical_name);
-            return true;
-        }
-        PLOG(ERROR) << "Failed to insmod '" << path_name << "' with args '" << options << "'";
-        return false;
-    }
-
-    LOG(INFO) << "Loaded kernel module " << path_name;
     std::lock_guard guard(module_loaded_lock_);
-    module_loaded_paths_.emplace(path_name);
-    module_loaded_.emplace(canonical_name);
-    module_count_++;
-    return true;
+
+    if (res.ok()) {
+        module_count_++;
+        module_loaded_paths_.emplace(path_name);
+        module_loaded_.emplace(canonical_name);
+        return true;
+    }
+    if (res.error().code() == EEXIST) {
+        module_loaded_paths_.emplace(path_name);
+        module_loaded_.emplace(canonical_name);
+        return true;
+    }
+    return false;
 }
 
 bool Modprobe::Rmmod(const std::string& module_name) {
-    auto canonical_name = MakeCanonical(module_name);
+    auto canonical_name = CanonicalizeModulePath(module_name);
     int ret = syscall(__NR_delete_module, canonical_name.c_str(), O_NONBLOCK);
     if (ret != 0) {
         PLOG(ERROR) << "Failed to remove module '" << module_name << "'";

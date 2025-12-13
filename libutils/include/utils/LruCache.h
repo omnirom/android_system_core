@@ -48,6 +48,7 @@ public:
     size_t size() const;
     const TValue& get(const TKey& key);
     bool put(const TKey& key, const TValue& value);
+    bool contains(const TKey& key) const;
     bool remove(const TKey& key);
     bool removeOldest();
     void clear();
@@ -103,7 +104,7 @@ private:
     void attachToCache(Entry& entry);
     void detachFromCache(Entry& entry);
 
-    typename LruCacheSet::iterator findByKey(const TKey& key) {
+    typename LruCacheSet::iterator findByKey(const TKey& key) const {
         EntryForSearch entryForSearch(key);
         typename LruCacheSet::iterator result = mSet->find(&entryForSearch);
         return result;
@@ -214,6 +215,11 @@ bool LruCache<TKey, TValue>::put(const TKey& key, const TValue& value) {
     mSet->insert(newEntry);
     attachToCache(*newEntry);
     return true;
+}
+
+template <typename TKey, typename TValue>
+bool LruCache<TKey, TValue>::contains(const TKey& key) const {
+    return findByKey(key) != mSet->end();
 }
 
 template <typename TKey, typename TValue>

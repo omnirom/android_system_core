@@ -36,7 +36,6 @@ cc_defaults {
     shared_libs: [
         "libbinder",
         "libutils",
-        "android.os.statsbootstrap_aidl-cpp",
     ],
 }
 
@@ -45,5 +44,3 @@ cc_library {
     defaults: ["libstatsbootstrap_defaults"],
     export_include_dirs: ["include"],
 }
-
-

@@ -43,8 +43,11 @@
 #include <libdm/dm.h>
 #include <libfiemap/image_manager.h>
 #include <liblp/liblp.h>
+#include <liblp/property_fetcher.h>
+#include <linux/fs.h>
 
 #include <android/snapshot/snapshot.pb.h>
+#include <libsnapshot/capabilities.h>
 #include <libsnapshot/snapshot_stats.h>
 #include "device_info.h"
 #include "partition_cow_creator.h"
@@ -72,6 +75,7 @@ using android::fs_mgr::CreateLogicalPartition;
 using android::fs_mgr::CreateLogicalPartitionParams;
 using android::fs_mgr::GetPartitionGroupName;
 using android::fs_mgr::GetPartitionName;
+using android::fs_mgr::IPropertyFetcher;
 using android::fs_mgr::LpMetadata;
 using android::fs_mgr::MetadataBuilder;
 using android::fs_mgr::SlotNumberForSlotSuffix;
@@ -150,20 +154,25 @@ static std::string GetCowName(const std::string& snapshot_name) {
 
 SnapshotManager::SnapshotDriver SnapshotManager::GetSnapshotDriver(LockedFile* lock) {
     if (UpdateUsesUserSnapshots(lock)) {
-        return SnapshotManager::SnapshotDriver::DM_USER;
+        if (UpdateUsesUblk(lock)) {
+            return SnapshotManager::SnapshotDriver::UBLK;
+        } else {
+            return SnapshotManager::SnapshotDriver::DM_USER;
+        }
     } else {
         return SnapshotManager::SnapshotDriver::DM_SNAPSHOT;
     }
 }
 
-static std::string GetDmUserCowName(const std::string& snapshot_name,
-                                    SnapshotManager::SnapshotDriver driver) {
+static std::string GetSnapshotCowName(const std::string& snapshot_name,
+                                      SnapshotManager::SnapshotDriver driver) {
     // dm-user block device will act as a snapshot device. We identify it with
     // the same partition name so that when partitions can be mounted off
     // dm-user.
 
     switch (driver) {
-        case SnapshotManager::SnapshotDriver::DM_USER: {
+        case SnapshotManager::SnapshotDriver::DM_USER:
+        case SnapshotManager::SnapshotDriver::UBLK: {
             return snapshot_name;
         }
 
@@ -505,67 +514,29 @@ Return SnapshotManager::CreateCowImage(LockedFile* lock, const std::string& name
     int cow_flags = IImageManager::CREATE_IMAGE_DEFAULT;
     return Return(images_->CreateBackingImage(cow_image_name, status.cow_file_size(), cow_flags));
 }
-
-bool SnapshotManager::MapDmUserCow(LockedFile* lock, const std::string& name,
-                                   const std::string& cow_file, const std::string& base_device,
-                                   const std::string& base_path_merge,
-                                   const std::chrono::milliseconds& timeout_ms, std::string* path) {
-    CHECK(lock);
-
-    if (UpdateUsesUserSnapshots(lock)) {
-        SnapshotStatus status;
-        if (!ReadSnapshotStatus(lock, name, &status)) {
-            LOG(ERROR) << "MapDmUserCow: ReadSnapshotStatus failed...";
-            return false;
-        }
-
-        if (status.state() == SnapshotState::NONE ||
-            status.state() == SnapshotState::MERGE_COMPLETED) {
-            LOG(ERROR) << "Should not create a snapshot device for " << name
-                       << " after merging has completed.";
-            return false;
-        }
-
-        SnapshotUpdateStatus update_status = ReadSnapshotUpdateStatus(lock);
-        if (update_status.state() == UpdateState::MergeCompleted ||
-            update_status.state() == UpdateState::MergeNeedsReboot) {
-            LOG(ERROR) << "Should not create a snapshot device for " << name
-                       << " after global merging has completed.";
-            return false;
-        }
+static std::optional<std::string> GetUblkControlDevicePath(const std::string& ublkb_path) {
+    if (!android::base::StartsWith(ublkb_path, "/dev/block/ublkb")) {
+        return std::nullopt;
     }
+    return "/dev/ublkc" + ublkb_path.substr(strlen("/dev/block/ublkb"));
+}
 
-    // Use an extra decoration for first-stage init, so we can transition
-    // to a new table entry in second-stage.
-    std::string misc_name = name;
-    if (use_first_stage_snapuserd_) {
-        misc_name += "-init";
-    }
-
-    if (!EnsureSnapuserdConnected()) {
-        return false;
-    }
-
-    uint64_t base_sectors = 0;
-    if (!UpdateUsesUserSnapshots(lock)) {
-        base_sectors = snapuserd_client_->InitDmUserCow(misc_name, cow_file, base_device);
-        if (base_sectors == 0) {
-            LOG(ERROR) << "Failed to retrieve base_sectors from Snapuserd";
-            return false;
-        }
-    } else if (IsSnapshotWithoutSlotSwitch()) {
+bool SnapshotManager::CalculateBaseSectorsForUserspaceCow(const std::string& cow_file,
+                                                          const std::string& base_path_merge,
+                                                          uint64_t& out_base_sectors) {
+    if (IsSnapshotWithoutSlotSwitch()) {
         // When snapshots are on current slot, we determine the size
         // of block device based on the number of COW operations. We cannot
         // use base device as it will be from older image.
         unique_fd fd(open(cow_file.c_str(), O_RDONLY | O_CLOEXEC));
         if (fd < 0) {
-            PLOG(ERROR) << "Failed to open " << cow_file;
+            PLOG(ERROR) << "CalculateBaseSectors: Failed to open COW file " << cow_file;
             return false;
         }
 
         CowReader reader;
         if (!reader.Parse(std::move(fd))) {
-            LOG(ERROR) << "Failed to parse cow " << cow_file;
+            LOG(ERROR) << "CalculateBaseSectors: Failed to parse COW file " << cow_file;
             return false;
         }
 
@@ -580,54 +551,368 @@ bool SnapshotManager::MapDmUserCow(LockedFile* lock, const std::string& name,
             const auto& v3_header = reader.header_v3();
             dev_sz = v3_header.op_count_max * v3_header.block_size;
         }
-
-        base_sectors = dev_sz >> 9;
+        out_base_sectors = dev_sz >> 9;
     } else {
         // For userspace snapshots, the size of the base device is taken as the
-        // size of the dm-user block device. Since there is no pseudo mapping
+        // size of the dm-user/ublk block device. Since there is no pseudo mapping
         // created in the daemon, we no longer need to rely on the daemon for
         // sizing the dm-user block device.
         unique_fd fd(TEMP_FAILURE_RETRY(open(base_path_merge.c_str(), O_RDONLY | O_CLOEXEC)));
         if (fd < 0) {
-            LOG(ERROR) << "Cannot open block device: " << base_path_merge;
+            LOG(ERROR) << "CalculateBaseSectors: Cannot open block device: " << base_path_merge;
             return false;
         }
 
         uint64_t dev_sz = get_block_device_size(fd.get());
         if (!dev_sz) {
-            LOG(ERROR) << "Failed to find block device size: " << base_path_merge;
+            LOG(ERROR) << "CalculateBaseSectors: Failed to find block device size: "
+                       << base_path_merge;
             return false;
         }
-
-        base_sectors = dev_sz >> 9;
+        out_base_sectors = dev_sz >> 9;
     }
+    return true;
+}
 
+bool SnapshotManager::HandleDmUserDeviceCreation(const std::string& name,
+                                                 const std::string& misc_name,
+                                                 uint64_t base_sectors,
+                                                 const std::chrono::milliseconds& timeout_ms,
+                                                 std::string* out_final_path) {
     DmTable table;
     table.Emplace<DmTargetUser>(0, base_sectors, misc_name);
-    if (!dm_.CreateDevice(name, table, path, timeout_ms)) {
-        LOG(ERROR) << " dm-user: CreateDevice failed... ";
+    if (!dm_.CreateDevice(name, table, out_final_path, timeout_ms)) {
+        LOG(ERROR) << " dm-user: CreateDevice failed for " << name;
         return false;
     }
-    if (!WaitForDevice(*path, timeout_ms)) {
-        LOG(ERROR) << " dm-user: timeout: Failed to create block device for: " << name;
+    if (!WaitForDevice(*out_final_path, timeout_ms)) {
+        LOG(ERROR) << " dm-user: timeout: Failed to create block device for: " << name << " at "
+                   << *out_final_path;
         return false;
     }
-
     auto control_device = "/dev/dm-user/" + misc_name;
     if (!WaitForDevice(control_device, timeout_ms)) {
+        LOG(ERROR) << " dm-user: timeout: Failed to wait for control device: " << control_device
+                   << " for " << name;
+        return false;
+    }
+    return true;
+}
+
+bool SnapshotManager::HandleUblkDeviceCreation(const std::string& misc_name, uint64_t base_sectors,
+                                               const std::chrono::milliseconds& timeout_ms) {
+    if (!EnsureUblkPrerequisites(timeout_ms)) {
+        return false;
+    }
+    // TODOUBLK: b/414812023 : Notify snapuserd that we will be using ublk
+    // currently this is empty stub, but needs to be built up for a
+    // poke to snapuserd if argv is not an option especially during initial
+    // boot.
+    snapuserd_client_->CreateUserSnapshot(misc_name, base_sectors);
+
+    return true;
+}
+
+bool SnapshotManager::EnsureUblkPrerequisites(const std::chrono::milliseconds& timeout_ms) {
+    LOG(INFO) << "Using UBLK for snapshots, checking prerequisites...";
+    // This currently only has ublk driver persence in kernel.
+    // This can be built up if we need to add more checks
+    if (!WaitForDevice("/dev/ublk-control", timeout_ms)) {
+        LOG(ERROR) << "Cannot create ublk device: /dev/ublk-control node not found or timed out.";
+        return false;
+    }
+    return true;
+}
+
+bool SnapshotManager::SetupDmLinearOverUblk(const std::string& snapshot_dm_name,
+                                            uint64_t base_sectors,
+                                            const std::string& ublk_bdev_path,
+                                            const std::chrono::milliseconds& timeout_ms,
+                                            std::string* out_final_dm_path) {
+    // This function is only called if using_ublk_ && use_first_stage_snapuserd_ is true.
+    // It assumes snapuserd_client_ is connected, AttachDmUser for misc_name was successful,
+    // and ublk_bdev_path is the valid path to the ublk block device.
+
+    LOG(DEBUG) << "SetupDmLinearOverUblk: UBLK block device for dm-linear is " << ublk_bdev_path;
+
+    if (!WaitForDevice(ublk_bdev_path, 1s)) {
+        LOG(ERROR) << "SetupDmLinearOverUblk: Timeout waiting for ublk block device: "
+                   << ublk_bdev_path << " for snapshot " << snapshot_dm_name;
+        return false;
+    }
+    LOG(INFO) << "SetupDmLinearOverUblk: Done waiting for ublk block device " << ublk_bdev_path;
+
+    DmTable table;
+    table.Emplace<DmTargetLinear>(0, base_sectors, ublk_bdev_path, 0);
+
+    if (!dm_.CreateDevice(snapshot_dm_name, table, out_final_dm_path, timeout_ms)) {
+        LOG(ERROR) << "SetupDmLinearOverUblk: DM linear device creation over ublk failed for: "
+                   << snapshot_dm_name;
+        snapuserd_client_->WaitForDeviceDelete(snapshot_dm_name);
         return false;
     }
 
-    if (UpdateUsesUserSnapshots(lock)) {
-        // Now that the dm-user device is created, initialize the daemon and
-        // spin up the worker threads.
-        if (!snapuserd_client_->InitDmUserCow(misc_name, cow_file, base_device, base_path_merge)) {
-            LOG(ERROR) << "InitDmUserCow failed";
-            return false;
-        }
+    if (!WaitForDevice(*out_final_dm_path, timeout_ms)) {
+        LOG(ERROR) << "SetupDmLinearOverUblk: Timeout waiting for final dm device: "
+                   << *out_final_dm_path << " for snapshot " << snapshot_dm_name;
+        snapuserd_client_->WaitForDeviceDelete(snapshot_dm_name);
+        return false;
+    }
+    dm_.GetDmDevicePathByName(snapshot_dm_name, out_final_dm_path);
+    LOG(DEBUG) << "SetupDmLinearOverUblk: Snapshot device (via ublk+dm-linear) for "
+               << snapshot_dm_name << " at path: " << *out_final_dm_path;
+    return true;
+}
+
+std::optional<std::string> SnapshotManager::GetVerifiedUblkPath(const std::string& misc_name) {
+    LOG(INFO) << "Getting verified UBLK path for " << misc_name;
+
+    std::optional<std::string> bdev_path = snapuserd_client_->GetDeviceName(misc_name);
+    if (!bdev_path.has_value() || bdev_path->empty()) {
+        LOG(ERROR) << "GetVerifiedUblkPath: Failed to get ublk block device name for " << misc_name;
+        return std::nullopt;
     }
 
-    return snapuserd_client_->AttachDmUser(misc_name);
+    auto ctrl_path = GetUblkControlDevicePath(*bdev_path);
+    if (!ctrl_path.has_value() || ctrl_path->empty()) {
+        LOG(ERROR) << "GetVerifiedUblkPath: Failed to construct ublk control device path for "
+                   << misc_name << " from bdev " << *bdev_path;
+        return std::nullopt;
+    }
+
+    // Wait for the control device to be ready
+    if (!WaitForDevice(*ctrl_path, 500ms)) {
+        LOG(ERROR) << "GetVerifiedUblkPath: Timeout waiting for ublk control device: " << *ctrl_path
+                   << " for " << misc_name;
+        return std::nullopt;
+    }
+
+    LOG(INFO) << "GetVerifiedUblkPath: Done waiting for ublk control device " << *ctrl_path
+              << " for " << misc_name << ". Ublk block device: " << *bdev_path;
+    return bdev_path;
+}
+
+bool SnapshotManager::EnsureDmLinearOverUblk(const std::string& dm_device_name,
+                                             const std::optional<std::string>& ublk_bdev_path_opt,
+                                             uint64_t base_sectors,
+                                             const std::chrono::milliseconds& timeout_ms) {
+    if (!ublk_bdev_path_opt.has_value() || ublk_bdev_path_opt->empty()) {
+        LOG(ERROR) << "EnsureDmLinearOverUblk: UBLK block device path is missing for "
+                   << dm_device_name;
+        return false;
+    }
+
+    const std::string& ublk_bdev_path = *ublk_bdev_path_opt;
+
+    if (!WaitForDevice(ublk_bdev_path, timeout_ms)) {
+        LOG(ERROR) << "EnsureDmLinearOverUblk: Timeout waiting for ublk block device: "
+                   << ublk_bdev_path << " for " << dm_device_name;
+        return false;
+    }
+    LOG(INFO) << "EnsureDmLinearOverUblk: Done waiting for ublk block device " << ublk_bdev_path
+              << " for " << dm_device_name;
+
+    DmTable table;
+    table.Emplace<DmTargetLinear>(0, base_sectors, ublk_bdev_path, 0);
+
+    if (dm_.GetState(dm_device_name) != DmDeviceState::INVALID) {
+        if (!dm_.LoadTableAndActivate(dm_device_name, table)) {
+            LOG(ERROR) << "EnsureDmLinearOverUblk: Failed to switch dm tables for "
+                       << dm_device_name;
+            return false;
+        }
+        LOG(INFO) << "EnsureDmLinearOverUblk: Switched dm tables for " << dm_device_name;
+    } else {
+        std::string path{};
+        if (!dm_.CreateDevice(dm_device_name, table, &path, timeout_ms)) {
+            LOG(ERROR) << "EnsureDmLinearOverUblk: Failed to create dm-linear device for "
+                       << dm_device_name;
+            return false;
+        }
+        LOG(INFO) << "EnsureDmLinearOverUblk: Created dm-linear for " << dm_device_name << " at "
+                  << path;
+    }
+    return true;
+}
+
+bool SnapshotManager::VerifyUblkDeviceReady(const std::string& misc_name) {
+    LOG(DEBUG) << "Verifying UBLK device readiness for " << misc_name;
+
+    std::optional<std::string> snapshot_bdev_name = snapuserd_client_->GetDeviceName(misc_name);
+    if (!snapshot_bdev_name.has_value() || snapshot_bdev_name.value().empty()) {
+        LOG(ERROR) << "VerifyUblkDeviceReady: Failed to get ublk block device name for "
+                   << misc_name;
+        return false;
+    }
+
+    // Note: The block device itself (*snapshot_bdev_name) is waited for later
+    // in SetupDmLinearOverUblk. Here, we focus on the control device.
+    auto snapshot_ctrl_device_name = GetUblkControlDevicePath(*snapshot_bdev_name);
+    if (!snapshot_ctrl_device_name.has_value() || snapshot_ctrl_device_name.value().empty()) {
+        LOG(ERROR) << "VerifyUblkDeviceReady: Failed to construct ublk control device path for "
+                   << misc_name << " from bdev " << *snapshot_bdev_name;
+        return false;
+    }
+
+    if (!WaitForDevice(*snapshot_ctrl_device_name, 500ms)) {
+        LOG(ERROR) << "VerifyUblkDeviceReady: Timeout waiting for ublk control device: "
+                   << *snapshot_ctrl_device_name << " for " << misc_name;
+        return false;
+    }
+    LOG(INFO) << "VerifyUblkDeviceReady: Done waiting for ublk control device "
+              << *snapshot_ctrl_device_name;
+    return true;
+}
+
+bool SnapshotManager::MapUserspaceCowDmUser(
+        const std::string& name, const std::string& misc_name, const std::string& cow_file,
+        const std::string& base_device, const std::string& base_path_merge, uint64_t base_sectors,
+        const std::chrono::milliseconds& timeout_ms, std::string* out_final_path) {
+    // Step 1: Create the dm-user device
+    if (!HandleDmUserDeviceCreation(name, misc_name, base_sectors, timeout_ms, out_final_path)) {
+        return false;
+    }
+
+    // Step 2: InitDmUserCow for userspace snapshots
+    if (!snapuserd_client_->InitDmUserCow(misc_name, cow_file, base_device, base_path_merge)) {
+        LOG(ERROR) << "MapUserspaceCowDmUser: InitDmUserCow failed for " << misc_name;
+        return false;
+    }
+
+    // Step 3: AttachDmUser
+    if (!snapuserd_client_->AttachDmUser(misc_name)) {
+        LOG(ERROR) << "MapUserspaceCowDmUser: AttachDmUser failed for " << misc_name;
+        return false;
+    }
+    LOG(DEBUG) << "MapUserspaceCowDmUser: AttachDmUser success for " << misc_name;
+    return true;
+}
+
+bool SnapshotManager::MapUserspaceCowUblk(const std::string& name, const std::string& misc_name,
+                                          const std::string& cow_file,
+                                          const std::string& base_device,
+                                          const std::string& base_path_merge, uint64_t base_sectors,
+                                          const std::chrono::milliseconds& timeout_ms,
+                                          std::string* out_final_path) {
+    // Step 1: Ublk prerequisites and initial device creation request
+    if (!HandleUblkDeviceCreation(misc_name, base_sectors, timeout_ms)) {
+        return false;
+    }
+
+    // Step 2: InitDmUserCow for userspace snapshots ublk
+    if (!snapuserd_client_->InitDmUserCow(misc_name, cow_file, base_device, base_path_merge)) {
+        LOG(ERROR) << "MapUserspaceCowUblk: InitDmUserCow failed for " << misc_name;
+        return false;
+    }
+
+    // Step 3: Verify Ublk device readiness
+    if (!VerifyUblkDeviceReady(misc_name)) {
+        return false;
+    }
+
+    // Step 4: AttachDmUser
+    if (!snapuserd_client_->AttachDmUser(misc_name)) {
+        LOG(ERROR) << "MapUserspaceCowUblk: AttachDmUser failed for " << misc_name;
+        return false;
+    }
+    LOG(DEBUG) << "MapUserspaceCowUblk: AttachDmUser success for " << misc_name;
+
+    // Step 5: Final dm-linear setup for ublk in first-stage init
+    if (use_first_stage_snapuserd_) {
+        std::optional<std::string> ublk_bdev_opt = snapuserd_client_->GetDeviceName(misc_name);
+        if (!ublk_bdev_opt.has_value() || ublk_bdev_opt.value().empty()) {
+            LOG(ERROR) << "MapUserspaceCowUblk: Failed to get ublk block device name for "
+                       << misc_name << " to setup dm-linear.";
+            return false;
+        }
+        if (!SetupDmLinearOverUblk(name, base_sectors, ublk_bdev_opt.value(), timeout_ms,
+                                   out_final_path)) {
+            return false;
+        }
+    } else {
+        if (out_final_path) out_final_path->clear();
+    }
+    return true;
+}
+
+bool SnapshotManager::MapUserspaceCow(LockedFile* lock, const std::string& name,
+                                      const std::string& cow_file, const std::string& base_device,
+                                      const std::string& base_path_merge,
+                                      const std::chrono::milliseconds& timeout_ms,
+                                      std::string* path) {
+    CHECK(lock);
+    bool is_userspace_snapshot_path = UpdateUsesUserSnapshots(lock);
+    bool use_ublk_processing = false;
+
+    if (is_userspace_snapshot_path) {
+        SnapshotStatus status;
+        if (!ReadSnapshotStatus(lock, name, &status)) {
+            LOG(ERROR) << "MapUserspaceCow: ReadSnapshotStatus failed for " << name;
+            return false;
+        }
+        if (status.state() == SnapshotState::NONE ||
+            status.state() == SnapshotState::MERGE_COMPLETED) {
+            LOG(ERROR) << "MapUserspaceCow: Should not create a snapshot device for " << name
+                       << " in state " << SnapshotState_Name(status.state());
+            return false;
+        }
+
+        SnapshotUpdateStatus update_status = ReadSnapshotUpdateStatus(lock);
+        if (update_status.state() == UpdateState::MergeCompleted ||
+            update_status.state() == UpdateState::MergeNeedsReboot) {
+            LOG(ERROR) << "MapUserspaceCow: Should not create a snapshot device for " << name
+                       << " while global merging has completed.";
+            return false;
+        }
+        use_ublk_processing = update_status.ublk_snapshots_enabled();
+    }
+
+    std::string misc_name = name;
+    if (use_first_stage_snapuserd_) {
+        misc_name += "-init";
+    }
+
+    if (!EnsureSnapuserdConnected()) {
+        return false;
+    }
+
+    uint64_t base_sectors = 0;
+    if (!is_userspace_snapshot_path) {
+        // Non-Userspace Snapshot Path
+        base_sectors = snapuserd_client_->InitDmUserCow(misc_name, cow_file, base_device);
+        if (base_sectors == 0) {
+            LOG(ERROR) << "MapUserspaceCow: Failed to init/get size via InitDmUserCow for "
+                          "non-userspace snapshot "
+                       << misc_name;
+            return false;
+        }
+        // AttachDmUser for non-userspace path
+        if (!snapuserd_client_->AttachDmUser(misc_name)) {
+            LOG(ERROR) << "MapUserspaceCow: AttachDmUser failed for non-userspace snapshot "
+                       << misc_name;
+            return false;
+        }
+        LOG(DEBUG) << "MapUserspaceCow: AttachDmUser success for non-userspace snapshot "
+                   << misc_name;
+        return true;
+    } else {
+        // Userspace Snapshot Path (ublk or dm-user)
+        if (!CalculateBaseSectorsForUserspaceCow(cow_file, base_path_merge, base_sectors)) {
+            return false;
+        }
+        if (base_sectors == 0) {
+            LOG(ERROR) << "MapUserspaceCow: base_sectors is zero after calculation for userspace "
+                          "snapshot "
+                       << name;
+            return false;
+        }
+        if (use_ublk_processing) {
+            return MapUserspaceCowUblk(name, misc_name, cow_file, base_device, base_path_merge,
+                                       base_sectors, timeout_ms, path);
+        }
+        return MapUserspaceCowDmUser(name, misc_name, cow_file, base_device, base_path_merge,
+                                     base_sectors, timeout_ms, path);
+    }
 }
 
 bool SnapshotManager::MapSnapshot(LockedFile* lock, const std::string& name,
@@ -759,11 +1044,9 @@ bool SnapshotManager::MapSourceDevice(LockedFile* lock, const std::string& name,
     }
 
     auto old_name = GetOtherPartitionName(name);
-    auto slot_suffix = device_->GetSlotSuffix();
-    auto slot = SlotNumberForSlotSuffix(slot_suffix);
 
     CreateLogicalPartitionParams params = {
-            .block_device = device_->GetSuperDevice(slot),
+            .block_device = device_->GetSuperDevice(),
             .metadata = metadata,
             .partition_name = old_name,
             .timeout_ms = timeout_ms,
@@ -798,10 +1081,62 @@ bool SnapshotManager::UnmapCowImage(const std::string& name) {
     return images_->UnmapImageIfExists(GetCowImageDeviceName(name));
 }
 
+// Discards all blocks on the given logical COW device.
+static void DiscardCowDevice(const std::string& cow_device_name) {
+    DeviceMapper& dm = DeviceMapper::Instance();
+
+    if (dm.GetState(cow_device_name) == DmDeviceState::INVALID) {
+        // We may have cow mapped through FIEMAP, in that case cow device does not exist
+        // So this is not an error.
+        LOG(INFO) << "Cow device " << cow_device_name << " not found, skipping discard";
+        return;
+    }
+
+    std::string path;
+    if (!dm.GetDmDevicePathByName(cow_device_name, &path)) {
+        LOG(ERROR) << "Could not find device path for " << cow_device_name;
+        return;
+    }
+
+    android::base::unique_fd fd(open(path.c_str(), O_RDWR | O_CLOEXEC));
+    if (fd < 0) {
+        PLOG(ERROR) << "Failed to open " << path;
+        return;
+    }
+
+    uint64_t size = 0;
+    if (ioctl(fd.get(), BLKGETSIZE64, &size) < 0) {
+        PLOG(ERROR) << "Failed to get size of " << path;
+        return;
+    }
+
+    if (size == 0) {
+        LOG(INFO) << "Device " << path << " has size 0, nothing to discard.";
+        return;
+    }
+
+    uint64_t range[2] = {0, size};
+    auto start = std::chrono::steady_clock::now();
+    if (ioctl(fd.get(), BLKDISCARD, &range) < 0) {
+        PLOG(ERROR) << "Failed to discard " << path << " with size " << size;
+        return;
+    }
+    auto end = std::chrono::steady_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+
+    LOG(INFO) << "Successfully discarded " << size << " bytes on " << cow_device_name << " at "
+              << path << " in " << duration.count() << "ms";
+}
+
 bool SnapshotManager::DeleteSnapshot(LockedFile* lock, const std::string& name) {
     CHECK(lock);
     CHECK(lock->lock_mode() == LOCK_EX);
     if (!EnsureImageManager()) return false;
+
+    if (UpdateUsesUserSnapshots(lock)) {
+        // Discard is best effort, so we do not check for errors
+        DiscardCowDevice(GetCowName(name));
+    }
 
     if (!UnmapCowDevices(lock, name)) {
         return false;
@@ -956,6 +1291,11 @@ bool SnapshotManager::InitiateMerge() {
         return false;
     }
 
+    if (GetDebugFlag("block_merge_switchover")) {
+        LOG(INFO) << "Merge switchover blocked for testing.";
+        return true;
+    }
+
     auto reported_code = MergeFailureCode::Ok;
     for (const auto& snapshot : *merge_group) {
         // If this fails, we have no choice but to continue. Everything must
@@ -1080,25 +1420,45 @@ bool SnapshotManager::GetSingleTarget(const std::string& dm_name, TableQuery que
     return true;
 }
 
+bool SnapshotManager::IsParentUblkDevice(const std::string& dm_name) {
+    auto& dm = DeviceMapper::Instance();
+    auto parent = dm.GetParentBlockDeviceByPath("/dev/block/mapper/" + dm_name);
+
+    if (parent.has_value() && parent.value().starts_with("/dev/block/ublkb")) {
+        LOG(DEBUG) << "Partition " << dm_name << " parent" << parent.value();
+        return true;
+    }
+    return false;
+}
+
 bool SnapshotManager::IsSnapshotDevice(const std::string& dm_name, TargetInfo* target) {
-    DeviceMapper::TargetInfo snap_target;
-    if (!GetSingleTarget(dm_name, TableQuery::Status, &snap_target)) {
+    DeviceMapper::TargetInfo snap_target_info;
+    if (!GetSingleTarget(dm_name, TableQuery::Status, &snap_target_info)) {
         return false;
     }
-    auto type = DeviceMapper::GetTargetType(snap_target.spec);
+    auto type = DeviceMapper::GetTargetType(snap_target_info.spec);
 
-    // If this is not a user-snapshot device then it should either
-    // be a dm-snapshot or dm-snapshot-merge target
-    if (type != "user") {
-        if (type != "snapshot" && type != "snapshot-merge") {
-            return false;
+    bool is_recognized_snapshot = false;
+
+    // Case 1: Linear device on top of UBLK
+    if (type == "linear" && IsParentUblkDevice(dm_name)) {
+        is_recognized_snapshot = true;
+    } else if (type == "user") {
+        // Case 2: dm-user device
+        is_recognized_snapshot = true;
+    } else if (type == "snapshot" || type == "snapshot-merge") {
+        // Case 3: dm-snapshot or dm-snapshot-merge device
+        is_recognized_snapshot = true;
+    }
+
+    if (is_recognized_snapshot) {
+        if (target) {
+            *target = std::move(snap_target_info);
         }
+        return true;
     }
-
-    if (target) {
-        *target = std::move(snap_target);
-    }
-    return true;
+    // Not any of the recognized snapshot types
+    return false;
 }
 
 auto SnapshotManager::UpdateStateToStr(const enum UpdateState state) {
@@ -1201,8 +1561,8 @@ auto SnapshotManager::CheckMergeState(const std::function<bool()>& before_cancel
     return result;
 }
 
-auto SnapshotManager::CheckMergeState(LockedFile* lock,
-                                      const std::function<bool()>& before_cancel) -> MergeResult {
+auto SnapshotManager::CheckMergeState(LockedFile* lock, const std::function<bool()>& before_cancel)
+        -> MergeResult {
     SnapshotUpdateStatus update_status = ReadSnapshotUpdateStatus(lock);
     switch (update_status.state()) {
         case UpdateState::None:
@@ -1372,38 +1732,51 @@ auto SnapshotManager::CheckTargetMergeState(LockedFile* lock, const std::string&
             return MergeResult(UpdateState::MergeFailed, MergeFailureCode::UnknownTargetType);
         }
 
-        // This is the case when device reboots during merge. Once the device boots,
-        // snapuserd daemon will not resume merge immediately in first stage init.
-        // This is slightly different as compared to dm-snapshot-merge; In this
-        // case, metadata file will have "MERGING" state whereas the daemon will be
-        // waiting to resume the merge. Thus, we resume the merge at this point.
-        if (merge_status == "snapshot" && snapshot_status.state() == SnapshotState::MERGING) {
-            if (!snapuserd_client_->InitiateMerge(name)) {
-                return MergeResult(UpdateState::MergeFailed, MergeFailureCode::UnknownTargetType);
-            }
-            return MergeResult(UpdateState::Merging);
-        }
-
-        if (merge_status == "snapshot" &&
-            DecideMergePhase(snapshot_status) == MergePhase::SECOND_PHASE) {
-            if (update_status.merge_phase() == MergePhase::FIRST_PHASE) {
-                // The snapshot is not being merged because it's in the wrong phase.
-                return MergeResult(UpdateState::None);
-            } else {
-                // update_status is already in second phase but the
-                // snapshot_status is still not set to SnapshotState::MERGING.
-                //
-                // Resume the merge at this point. see b/374225913
-                LOG(INFO) << "SwitchSnapshotToMerge: " << name << " after resuming merge";
-                auto code = SwitchSnapshotToMerge(lock, name);
-                if (code != MergeFailureCode::Ok) {
-                    LOG(ERROR) << "Failed to switch snapshot: " << name
-                               << " to merge during second phase";
+        if (merge_status == "snapshot") {
+            // This is the case when device reboots during merge. Once the device boots,
+            // snapuserd daemon will not resume merge immediately in first stage init.
+            // This is slightly different as compared to dm-snapshot-merge; In this
+            // case, metadata file will have "MERGING" state whereas the daemon will be
+            // waiting to resume the merge. Thus, we resume the merge at this point.
+            if (snapshot_status.state() == SnapshotState::MERGING) {
+                if (!snapuserd_client_->InitiateMerge(name)) {
                     return MergeResult(UpdateState::MergeFailed,
                                        MergeFailureCode::UnknownTargetType);
                 }
                 return MergeResult(UpdateState::Merging);
             }
+
+            auto intended_phase = DecideMergePhase(snapshot_status);
+            if (intended_phase == MergePhase::SECOND_PHASE &&
+                update_status.merge_phase() == MergePhase::FIRST_PHASE) {
+                // The snapshot is not being merged because it's in the wrong phase.
+                return MergeResult(UpdateState::None);
+            }
+
+            // The inverse of the above condition should never be true. We
+            // should not enter the next phase without completing the first
+            // phase.
+            if (intended_phase != update_status.merge_phase()) {
+                LOG(ERROR) << "Snapshot " << name << " is out of phase";
+                return MergeResult(UpdateState::MergeFailed, MergeFailureCode::IncorrectMergePhase);
+            }
+
+            if (GetDebugFlag("block_merge_switchover")) {
+                LOG(INFO) << "Delayed merge switchover blocked for testing.";
+                return MergeResult(UpdateState::Merging);
+            }
+
+            // Resume the merge at this point. see b/374225913. We were probably
+            // interrupted during a phase change.
+            LOG(INFO) << "SwitchSnapshotToMerge: " << name << " after resuming merge";
+
+            auto code = SwitchSnapshotToMerge(lock, name);
+            if (code != MergeFailureCode::Ok) {
+                LOG(ERROR) << "Failed to switch snapshot: " << name
+                           << " to merge during second phase";
+                return MergeResult(UpdateState::MergeFailed, MergeFailureCode::UnknownTargetType);
+            }
+            return MergeResult(UpdateState::Merging);
         }
 
         if (merge_status == "snapshot-merge") {
@@ -1601,7 +1974,7 @@ bool SnapshotManager::OnSnapshotMergeComplete(LockedFile* lock, const std::strin
                 return false;
             }
             if (target_type != "snapshot-merge") {
-                LOG(ERROR) << "Unexpected target type " << target_type
+                LOG(ERROR) << "msg3: Unexpected target type " << target_type
                            << " for snapshot device: " << name;
                 return false;
             }
@@ -1665,7 +2038,7 @@ bool SnapshotManager::CollapseSnapshotDevice(LockedFile* lock, const std::string
     uint32_t slot = SlotNumberForSlotSuffix(device_->GetSlotSuffix());
     // Create a DmTable that is identical to the base device.
     CreateLogicalPartitionParams base_device_params{
-            .block_device = device_->GetSuperDevice(slot),
+            .block_device = device_->GetSuperDevice(),
             .metadata_slot = slot,
             .partition_name = name,
             .partition_opener = &device_->GetPartitionOpener(),
@@ -1692,7 +2065,7 @@ bool SnapshotManager::CollapseSnapshotDevice(LockedFile* lock, const std::string
         // to switching of tables. Unmap will fail as the device will be mounted
         // by system partitions
         if (status.using_snapuserd()) {
-            auto dm_user_name = GetDmUserCowName(name, GetSnapshotDriver(lock));
+            auto dm_user_name = GetSnapshotCowName(name, GetSnapshotDriver(lock));
             UnmapDmUserDevice(dm_user_name);
         }
     }
@@ -1755,7 +2128,7 @@ bool SnapshotManager::HandleCancelledUpdate(LockedFile* lock,
 
 bool SnapshotManager::PerformInitTransition(InitTransition transition,
                                             std::vector<std::string>* snapuserd_argv) {
-    LOG(INFO) << "Performing transition for snapuserd.";
+    LOG(INFO) << "Performing transition for snapuserd. " << static_cast<int>(transition);
 
     // Don't use EnsureSnapuserdConnected() because this is called from init,
     // and attempting to do so will deadlock.
@@ -1784,6 +2157,11 @@ bool SnapshotManager::PerformInitTransition(InitTransition transition,
         if (UpdateUsesODirect(lock.get())) {
             snapuserd_argv->emplace_back("-o_direct");
         }
+        if (UpdateUsesUblk(lock.get())) {
+            snapuserd_argv->emplace_back("-ublk");
+        } else {
+            snapuserd_argv->emplace_back("-noublk");
+        }
         uint cow_op_merge_size = GetUpdateCowOpMergeSize(lock.get());
         if (cow_op_merge_size != 0) {
             snapuserd_argv->emplace_back("-cow_op_merge_size=" + std::to_string(cow_op_merge_size));
@@ -1801,12 +2179,15 @@ bool SnapshotManager::PerformInitTransition(InitTransition transition,
             snapuserd_argv->emplace_back("-num_verify_threads=" +
                                          std::to_string(num_verify_threads));
         }
+        if (UpdateUsesSkipVerification(lock.get())) {
+            snapuserd_argv->emplace_back("-skip_verification");
+        }
     }
 
     size_t num_cows = 0;
     size_t ok_cows = 0;
     for (const auto& snapshot : snapshots) {
-        std::string user_cow_name = GetDmUserCowName(snapshot, GetSnapshotDriver(lock.get()));
+        std::string user_cow_name = GetSnapshotCowName(snapshot, GetSnapshotDriver(lock.get()));
 
         if (dm_.GetState(user_cow_name) == DmDeviceState::INVALID) {
             continue;
@@ -1818,7 +2199,8 @@ bool SnapshotManager::PerformInitTransition(InitTransition transition,
         }
 
         auto target_type = DeviceMapper::GetTargetType(target.spec);
-        if (target_type != "user") {
+        if (target_type != "user" &&
+            !(target_type == "linear" && IsParentUblkDevice(user_cow_name))) {
             LOG(ERROR) << "Unexpected target type for " << user_cow_name << ": " << target_type;
             continue;
         }
@@ -1878,21 +2260,22 @@ bool SnapshotManager::PerformInitTransition(InitTransition transition,
             ok_cows++;
             continue;
         }
+        // We need dm-user devices only if we are not using ublk
+        if (!UpdateUsesUblk()) {
+            DmTable table;
+            table.Emplace<DmTargetUser>(0, target.spec.length, misc_name);
+            if (!dm_.LoadTableAndActivate(user_cow_name, table)) {
+                LOG(ERROR) << "Unable to swap tables for " << misc_name;
+                continue;
+            }
 
-        DmTable table;
-        table.Emplace<DmTargetUser>(0, target.spec.length, misc_name);
-        if (!dm_.LoadTableAndActivate(user_cow_name, table)) {
-            LOG(ERROR) << "Unable to swap tables for " << misc_name;
-            continue;
+            // Wait for ueventd to acknowledge and create the control device node.
+            std::string control_device = "/dev/dm-user/" + misc_name;
+            if (!WaitForDevice(control_device, 10s)) {
+                LOG(ERROR) << "dm-user control device no found:  " << misc_name;
+                continue;
+            }
         }
-
-        // Wait for ueventd to acknowledge and create the control device node.
-        std::string control_device = "/dev/dm-user/" + misc_name;
-        if (!WaitForDevice(control_device, 10s)) {
-            LOG(ERROR) << "dm-user control device no found:  " << misc_name;
-            continue;
-        }
-
         uint64_t base_sectors;
         if (!UpdateUsesUserSnapshots(lock.get())) {
             base_sectors =
@@ -1909,14 +2292,26 @@ bool SnapshotManager::PerformInitTransition(InitTransition transition,
         }
 
         CHECK(base_sectors <= target.spec.length);
-
+        std::optional<std::string> snapshot_device_name_;
+        if (UpdateUsesUblk()) {
+            snapshot_device_name_ = GetVerifiedUblkPath(misc_name);
+            if (!snapshot_device_name_.has_value()) {
+                return false;
+            }
+        }
         if (!snapuserd_client_->AttachDmUser(misc_name)) {
             // This error is unrecoverable. We cannot proceed because reads to
             // the underlying device will fail.
             LOG(FATAL) << "Could not initialize snapuserd for " << user_cow_name;
             return false;
         }
-
+        // Now do special handling if we are using ublk device by moving the dm-linear
+        // target to the new snapshot device
+        if (UpdateUsesUblk()) {
+            if (!EnsureDmLinearOverUblk(misc_name, snapshot_device_name_, base_sectors, 500ms)) {
+                return false;
+            }
+        }
         ok_cows++;
     }
 
@@ -1930,7 +2325,7 @@ bool SnapshotManager::PerformInitTransition(InitTransition transition,
 std::unique_ptr<LpMetadata> SnapshotManager::ReadCurrentMetadata() {
     const auto& opener = device_->GetPartitionOpener();
     uint32_t slot = SlotNumberForSlotSuffix(device_->GetSlotSuffix());
-    auto super_device = device_->GetSuperDevice(slot);
+    auto super_device = device_->GetSuperDevice();
     auto metadata = android::fs_mgr::ReadMetadata(opener, super_device, slot);
     if (!metadata) {
         LOG(ERROR) << "Could not read dynamic partition metadata for device: " << super_device;
@@ -1999,7 +2394,7 @@ bool SnapshotManager::GetSnapshotFlashingStatus(LockedFile* lock,
     // metadata are in sync, so flashing all partitions on the source slot will
     // remove the UPDATED flag on the target slot as well.
     const auto& opener = device_->GetPartitionOpener();
-    auto super_device = device_->GetSuperDevice(target_slot);
+    auto super_device = device_->GetSuperDevice();
     auto metadata = android::fs_mgr::ReadMetadata(opener, super_device, target_slot);
     if (!metadata) {
         return false;
@@ -2211,13 +2606,13 @@ bool SnapshotManager::IsSnapshotWithoutSlotSwitch() {
     return (access(GetBootSnapshotsWithoutSlotSwitchPath().c_str(), F_OK) == 0);
 }
 
-bool SnapshotManager::UpdateUsesCompression() {
+bool SnapshotManager::UpdateUsesSnapuserd() {
     auto lock = LockShared();
     if (!lock) return false;
-    return UpdateUsesCompression(lock.get());
+    return UpdateUsesSnapuserd(lock.get());
 }
 
-bool SnapshotManager::UpdateUsesCompression(LockedFile* lock) {
+bool SnapshotManager::UpdateUsesSnapuserd(LockedFile* lock) {
     // This returns true even if compression is "none", since update_engine is
     // really just trying to see if snapuserd is in use.
     SnapshotUpdateStatus update_status = ReadSnapshotUpdateStatus(lock);
@@ -2227,6 +2622,22 @@ bool SnapshotManager::UpdateUsesCompression(LockedFile* lock) {
 bool SnapshotManager::UpdateUsesIouring(LockedFile* lock) {
     SnapshotUpdateStatus update_status = ReadSnapshotUpdateStatus(lock);
     return update_status.io_uring_enabled();
+}
+
+bool SnapshotManager::UpdateUsesUblk(LockedFile* lock) {
+    SnapshotUpdateStatus update_status = ReadSnapshotUpdateStatus(lock);
+    is_snapshot_ublk_.emplace(update_status.ublk_snapshots_enabled());
+    return is_snapshot_ublk_.value();
+}
+
+bool SnapshotManager::UpdateUsesUblk() {
+    if (is_snapshot_ublk_.has_value()) {
+        return is_snapshot_ublk_.value();
+    }
+    auto lock = LockShared();
+    if (!lock) return false;
+
+    return UpdateUsesUblk(lock.get());
 }
 
 bool SnapshotManager::UpdateUsesODirect(LockedFile* lock) {
@@ -2476,17 +2887,20 @@ bool SnapshotManager::NeedSnapshotsInFirstStageMount() {
         if (slot == Slot::Source) {
             // Device is rebooting into the original slot, so mark this as a
             // rollback.
+            auto contents = ReadUpdateSourceSlotSuffix();
             auto path = GetRollbackIndicatorPath();
             if (!android::base::WriteStringToFile("1", path)) {
                 PLOG(ERROR) << "Unable to write rollback indicator: " << path;
             } else {
-                LOG(INFO) << "Rollback detected, writing rollback indicator to " << path;
+                LOG(INFO) << "Rollback detected, writing rollback indicator to " << path
+                          << ". UpdateSourceSlot: " << contents;
                 if (device_->IsTempMetadata()) {
                     CleanupScratchOtaMetadataIfPresent();
                 }
             }
         }
-        LOG(INFO) << "Not booting from new slot. Will not mount snapshots.";
+        LOG(INFO) << "Not booting from new slot: " << device_->GetSlotSuffix()
+                  << ". Will not mount snapshots.";
         return false;
     }
 
@@ -2747,11 +3161,11 @@ bool SnapshotManager::MapPartitionWithSnapshot(LockedFile* lock,
             return false;
         }
 
-        auto name = GetDmUserCowName(params.GetPartitionName(), GetSnapshotDriver(lock));
+        auto name = GetSnapshotCowName(params.GetPartitionName(), GetSnapshotDriver(lock));
 
         std::string new_cow_device;
-        if (!MapDmUserCow(lock, name, cow_path, source_device_path, base_path, remaining_time,
-                          &new_cow_device)) {
+        if (!MapUserspaceCow(lock, name, cow_path, source_device_path, base_path, remaining_time,
+                             &new_cow_device)) {
             LOG(ERROR) << "Could not map dm-user device for partition "
                        << params.GetPartitionName();
             return false;
@@ -2901,8 +3315,8 @@ bool SnapshotManager::UnmapCowDevices(LockedFile* lock, const std::string& name)
     CHECK(lock);
     if (!EnsureImageManager()) return false;
 
-    if (UpdateUsesCompression(lock) && !UpdateUsesUserSnapshots(lock)) {
-        auto dm_user_name = GetDmUserCowName(name, GetSnapshotDriver(lock));
+    if (UpdateUsesSnapuserd(lock) && !UpdateUsesUserSnapshots(lock)) {
+        auto dm_user_name = GetSnapshotCowName(name, GetSnapshotDriver(lock));
         if (!UnmapDmUserDevice(dm_user_name)) {
             return false;
         }
@@ -2949,10 +3363,13 @@ bool SnapshotManager::UnmapDmUserDevice(const std::string& dm_user_name) {
 
 bool SnapshotManager::UnmapUserspaceSnapshotDevice(LockedFile* lock,
                                                    const std::string& snapshot_name) {
-    auto dm_user_name = GetDmUserCowName(snapshot_name, GetSnapshotDriver(lock));
+    auto snapshot_driver = GetSnapshotDriver(lock);
+    auto dm_user_name = GetSnapshotCowName(snapshot_name, snapshot_driver);
     if (dm_.GetState(dm_user_name) == DmDeviceState::INVALID) {
         return true;
     }
+    DeviceMapper::TargetInfo target;
+    auto is_mapped = IsSnapshotDevice(snapshot_name, &target);
 
     CHECK(lock);
 
@@ -2971,7 +3388,9 @@ bool SnapshotManager::UnmapUserspaceSnapshotDevice(LockedFile* lock,
         }
     }
 
-    if (EnsureSnapuserdConnected()) {
+    // Only tell snapuserd if the device is actually mapped
+    if (is_mapped && EnsureSnapuserdConnected()) {
+        LOG(DEBUG) << "UnmapUserSpaceSnapshotDevice: " << dm_user_name;
         if (!snapuserd_client_->WaitForDeviceDelete(dm_user_name)) {
             LOG(ERROR) << "Failed to wait for " << dm_user_name << " control device to delete";
             return false;
@@ -2979,10 +3398,13 @@ bool SnapshotManager::UnmapUserspaceSnapshotDevice(LockedFile* lock,
     }
 
     // Ensure the control device is gone so we don't run into ABA problems.
-    auto control_device = "/dev/dm-user/" + dm_user_name;
-    if (!android::fs_mgr::WaitForFileDeleted(control_device, 10s)) {
-        LOG(ERROR) << "Timed out waiting for " << control_device << " to unlink";
-        return false;
+    // This is only needed for DM_USER
+    if (snapshot_driver == SnapshotManager::SnapshotDriver::DM_USER) {
+        auto control_device = "/dev/dm-user/" + dm_user_name;
+        if (!android::fs_mgr::WaitForFileDeleted(control_device, 10s)) {
+            LOG(ERROR) << "Timed out waiting for " << control_device << " to unlink";
+            return false;
+        }
     }
     return true;
 }
@@ -3003,14 +3425,14 @@ bool SnapshotManager::MapAllSnapshots(const std::chrono::milliseconds& timeout_m
     }
 
     std::vector<std::string> snapshots;
-    if (!ListSnapshots(lock.get(), &snapshots)) {
+    if (!ListSnapshots(lock.get(), &snapshots, GetSnapshotSlotSuffix())) {
         return false;
     }
 
     const auto& opener = device_->GetPartitionOpener();
     auto slot_suffix = device_->GetOtherSlotSuffix();
     auto slot_number = SlotNumberForSlotSuffix(slot_suffix);
-    auto super_device = device_->GetSuperDevice(slot_number);
+    auto super_device = device_->GetSuperDevice();
     auto metadata = android::fs_mgr::ReadMetadata(opener, super_device, slot_number);
     if (!metadata) {
         LOG(ERROR) << "MapAllSnapshots could not read dynamic partition metadata for device: "
@@ -3077,8 +3499,8 @@ bool SnapshotManager::UnmapAllSnapshots(LockedFile* lock) {
     return true;
 }
 
-auto SnapshotManager::OpenFile(const std::string& file,
-                               int lock_flags) -> std::unique_ptr<LockedFile> {
+auto SnapshotManager::OpenFile(const std::string& file, int lock_flags)
+        -> std::unique_ptr<LockedFile> {
     const auto start = std::chrono::system_clock::now();
     unique_fd fd(open(file.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
     if (fd < 0) {
@@ -3254,6 +3676,7 @@ bool SnapshotManager::WriteUpdateState(LockedFile* lock, UpdateState state,
         status.set_num_worker_threads(old_status.num_worker_threads());
         status.set_verify_block_size(old_status.verify_block_size());
         status.set_num_verification_threads(old_status.num_verification_threads());
+        status.set_ublk_snapshots_enabled(old_status.ublk_snapshots_enabled());
     }
     return WriteSnapshotUpdateStatus(lock, status);
 }
@@ -3445,7 +3868,7 @@ Return SnapshotManager::CreateUpdateSnapshots(const DeltaArchiveManifest& manife
     uint32_t current_slot = SlotNumberForSlotSuffix(current_suffix);
     auto target_suffix = device_->GetOtherSlotSuffix();
     uint32_t target_slot = SlotNumberForSlotSuffix(target_suffix);
-    auto current_super = device_->GetSuperDevice(current_slot);
+    auto current_super = device_->GetSuperDevice();
 
     auto current_metadata = MetadataBuilder::New(opener, current_super, current_slot);
     if (current_metadata == nullptr) {
@@ -3477,14 +3900,6 @@ Return SnapshotManager::CreateUpdateSnapshots(const DeltaArchiveManifest& manife
     // Delete previous COW partitions in current_metadata so that PartitionCowCreator marks those as
     // free regions.
     UnmapAndDeleteCowPartition(current_metadata.get());
-
-    // Check that all these metadata is not retrofit dynamic partitions. Snapshots on
-    // devices with retrofit dynamic partitions does not make sense.
-    // This ensures that current_metadata->GetFreeRegions() uses the same device
-    // indices as target_metadata (i.e. 0 -> "super").
-    // This is also assumed in MapCowDevices() call below.
-    CHECK(current_metadata->GetBlockDevicePartitionName(0) == LP_METADATA_DEFAULT_PARTITION_NAME &&
-          target_metadata->GetBlockDevicePartitionName(0) == LP_METADATA_DEFAULT_PARTITION_NAME);
 
     const auto& dap_metadata = manifest.dynamic_partition_metadata();
 
@@ -3592,8 +4007,8 @@ Return SnapshotManager::CreateUpdateSnapshots(const DeltaArchiveManifest& manife
                                     all_snapshot_status);
     if (!ret.is_ok()) return ret;
 
-    if (!UpdatePartitionTable(opener, device_->GetSuperDevice(target_slot),
-                              *exported_target_metadata, target_slot)) {
+    if (!UpdatePartitionTable(opener, device_->GetSuperDevice(), *exported_target_metadata,
+                              target_slot)) {
         LOG(ERROR) << "Cannot write target metadata";
         return Return::Error();
     }
@@ -3640,6 +4055,7 @@ Return SnapshotManager::CreateUpdateSnapshots(const DeltaArchiveManifest& manife
             status.set_legacy_snapuserd(true);
             LOG(INFO) << "Setting legacy_snapuserd to true";
         }
+
         status.set_cow_op_merge_size(
                 android::base::GetUintProperty<uint32_t>("ro.virtual_ab.cow_op_merge_size", 0));
         status.set_num_worker_threads(
@@ -3648,6 +4064,9 @@ Return SnapshotManager::CreateUpdateSnapshots(const DeltaArchiveManifest& manife
                 android::base::GetUintProperty<uint32_t>("ro.virtual_ab.verify_block_size", 0));
         status.set_num_verification_threads(
                 android::base::GetUintProperty<uint32_t>("ro.virtual_ab.num_verify_threads", 0));
+        status.set_ublk_snapshots_enabled(IsUblkEnabled());
+        is_snapshot_ublk_.emplace(status.ublk_snapshots_enabled());
+        LOG(INFO) << "Using ublk snapshots: " << status.ublk_snapshots_enabled();
     } else if (legacy_compression) {
         LOG(INFO) << "Virtual A/B using legacy snapuserd";
     } else {
@@ -3792,6 +4211,11 @@ Return SnapshotManager::CreateUpdateSnapshotsInternal(
                                                                kCowGroupName, 0 /* flags */);
             if (cow_partition == nullptr) {
                 return Return::Error();
+            }
+
+            if (GetDebugFlag("no_snapshot_space")) {
+                LOG(ERROR) << "Forcing NO_SPACE error during snapshot creation for testing";
+                return Return::NoSpace(cow_creator_ret->snapshot_status.cow_partition_size());
             }
 
             if (!target_metadata->ResizePartition(
@@ -4042,7 +4466,7 @@ bool SnapshotManager::UnmapAllPartitionsInRecovery() {
 
     const auto& opener = device_->GetPartitionOpener();
     uint32_t slot = SlotNumberForSlotSuffix(device_->GetSlotSuffix());
-    auto super_device = device_->GetSuperDevice(slot);
+    auto super_device = device_->GetSuperDevice();
     auto metadata = android::fs_mgr::ReadMetadata(opener, super_device, slot);
     if (!metadata) {
         LOG(ERROR) << "Could not read dynamic partition metadata for device: " << super_device;
@@ -4203,14 +4627,13 @@ bool SnapshotManager::HandleImminentDataWipe(const std::function<void()>& callba
                 break;
             }
             if (!HasForwardMergeIndicator()) {
-                auto slot_number = SlotNumberForSlotSuffix(device_->GetSlotSuffix());
                 auto other_slot_number = SlotNumberForSlotSuffix(device_->GetOtherSlotSuffix());
 
                 // We're not allowed to forward merge, so forcefully rollback the
                 // slot switch.
                 LOG(INFO) << "Allowing wipe due to lack of forward merge indicator; reverting to "
                              "old slot since update will be deleted.";
-                device_->SetSlotAsUnbootable(slot_number);
+                device_->SetSlotAsUnbootable(SlotNumberForSlotSuffix(device_->GetSlotSuffix()));
                 device_->SetActiveBootSlot(other_slot_number);
                 break;
             }
@@ -4232,8 +4655,7 @@ bool SnapshotManager::HandleImminentDataWipe(const std::function<void()>& callba
     }
 
     if (try_merge) {
-        auto slot_number = SlotNumberForSlotSuffix(device_->GetSlotSuffix());
-        auto super_path = device_->GetSuperDevice(slot_number);
+        auto super_path = device_->GetSuperDevice();
         if (!CreateLogicalAndSnapshotPartitions(super_path, 20s)) {
             LOG(ERROR) << "Unable to map partitions to complete merge.";
             return false;
@@ -4280,8 +4702,7 @@ bool SnapshotManager::FinishMergeInRecovery() {
         return false;
     }
 
-    auto slot_number = SlotNumberForSlotSuffix(device_->GetSlotSuffix());
-    auto super_path = device_->GetSuperDevice(slot_number);
+    auto super_path = device_->GetSuperDevice();
     if (!CreateLogicalAndSnapshotPartitions(super_path, 20s)) {
         LOG(ERROR) << "Unable to map partitions to complete merge.";
         return false;
@@ -4410,9 +4831,7 @@ CreateResult SnapshotManager::RecoveryCreateSnapshotDevices(
         return CreateResult::NOT_CREATED;
     }
 
-    auto slot_suffix = device_->GetOtherSlotSuffix();
-    auto slot_number = SlotNumberForSlotSuffix(slot_suffix);
-    auto super_path = device_->GetSuperDevice(slot_number);
+    auto super_path = device_->GetSuperDevice();
     if (!CreateLogicalAndSnapshotPartitions(super_path, 20s)) {
         LOG(ERROR) << "Unable to map partitions.";
         return CreateResult::ERROR;
@@ -4492,9 +4911,12 @@ bool SnapshotManager::WaitForDevice(const std::string& device,
     }
 
     // Otherwise, the only kind of device we need to wait for is a dm-user
-    // misc device. Normal calls to DeviceMapper::CreateDevice() guarantee
-    // the path has been created.
-    if (!android::base::StartsWith(device, "/dev/dm-user/")) {
+    // misc device or ublk devices. Normal calls to DeviceMapper::CreateDevice()
+    // guarantee the path has been created.
+    if (!android::base::StartsWith(device, "/dev/dm-user/") &&
+        !android::base::StartsWith(device, "/dev/block/ublk") &&
+        !android::base::StartsWith(device, "/dev/ublk-control") &&
+        !android::base::StartsWith(device, "/dev/ublkc")) {
         return true;
     }
 
@@ -4536,7 +4958,7 @@ bool SnapshotManager::DetachFirstStageSnapuserdForSelinux() {
     size_t num_cows = 0;
     size_t ok_cows = 0;
     for (const auto& snapshot : snapshots) {
-        std::string user_cow_name = GetDmUserCowName(snapshot, GetSnapshotDriver(lock.get()));
+        std::string user_cow_name = GetSnapshotCowName(snapshot, GetSnapshotDriver(lock.get()));
 
         if (dm_.GetState(user_cow_name) == DmDeviceState::INVALID) {
             continue;
@@ -4548,7 +4970,8 @@ bool SnapshotManager::DetachFirstStageSnapuserdForSelinux() {
         }
 
         auto target_type = DeviceMapper::GetTargetType(target.spec);
-        if (target_type != "user") {
+        if (target_type != "user" &&
+            !(target_type == "linear" && IsParentUblkDevice(user_cow_name))) {
             LOG(ERROR) << "Unexpected target type for " << user_cow_name << ": " << target_type;
             continue;
         }
@@ -4556,22 +4979,25 @@ bool SnapshotManager::DetachFirstStageSnapuserdForSelinux() {
         num_cows++;
         auto misc_name = user_cow_name;
 
-        DmTable table;
-        table.Emplace<DmTargetUser>(0, target.spec.length, misc_name);
-        if (!dm_.LoadTableAndActivate(user_cow_name, table)) {
-            LOG(ERROR) << "Unable to swap tables for " << misc_name;
-            continue;
-        }
+        if (!UpdateUsesUblk()) {
+            DmTable table;
+            table.Emplace<DmTargetUser>(0, target.spec.length, misc_name);
+            if (!dm_.LoadTableAndActivate(user_cow_name, table)) {
+                LOG(ERROR) << "Unable to swap tables for " << misc_name;
+                continue;
+            }
 
-        // Wait for ueventd to acknowledge and create the control device node.
-        std::string control_device = "/dev/dm-user/" + misc_name;
-        if (!WaitForDevice(control_device, 10s)) {
-            LOG(ERROR) << "dm-user control device no found:  " << misc_name;
-            continue;
-        }
+            // Wait for ueventd to acknowledge and create the control device node.
+            std::string control_device = "/dev/dm-user/" + misc_name;
+            if (!WaitForDevice(control_device, 10s)) {
+                LOG(ERROR) << "dm-user control device no found:  " << misc_name;
+                continue;
+            }
 
+            LOG(INFO) << "control device is ready: " << control_device;
+        }
+        // TODOUBLK: b/414812023 : Do we need to wait for /dev/ublkcN?
         ok_cows++;
-        LOG(INFO) << "control device is ready: " << control_device;
     }
 
     if (ok_cows != num_cows) {
@@ -4775,6 +5201,14 @@ bool SnapshotManager::IsUserspaceSnapshotUpdateInProgress(
         if (type == "user") {
             dynamic_partitions.emplace_back("/" + partition.first);
             is_ota_in_progress = true;
+        } else if (type == "linear") {
+            auto parent = dm.GetParentBlockDeviceByPath("/dev/block/mapper/" + partition_name);
+
+            if (parent.has_value() && parent.value().starts_with("/dev/block/ublkb")) {
+                LOG(DEBUG) << "Partition " << partition_name << " parent" << parent.value();
+                dynamic_partitions.emplace_back("/" + partition.first);
+                is_ota_in_progress = true;
+            }
         }
     }
     return is_ota_in_progress;
@@ -4797,6 +5231,8 @@ bool SnapshotManager::BootFromSnapshotsWithoutSlotSwitch() {
     update_status.set_state(UpdateState::Initiated);
     update_status.set_userspace_snapshots(true);
     update_status.set_using_snapuserd(true);
+    update_status.set_ublk_snapshots_enabled(IsUblkEnabled());
+    LOG(INFO) << "ublk enabled? :" << update_status.ublk_snapshots_enabled();
     if (!WriteSnapshotUpdateStatus(lock.get(), update_status)) {
         return false;
     }

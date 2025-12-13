@@ -551,32 +551,21 @@ bool WriteFileAction::ExecuteForProcess(uid_t uid, pid_t pid) const {
         return WriteValueToFile(value_, ProfileAction::RCT_PROCESS, uid, pid, logfailures_);
     }
 
-    DIR* d;
-    struct dirent* de;
-    char proc_path[255];
-    pid_t t_pid;
-
-    sprintf(proc_path, "/proc/%d/task", pid);
-    if (!(d = opendir(proc_path))) {
-        return false;
+    std::string proc_path = android::base::StringPrintf("/proc/%d/task", pid);
+    std::unique_ptr<DIR, decltype(&closedir)> d(opendir(proc_path.c_str()), closedir);
+    if (!d) {
+      return false;
     }
 
-    while ((de = readdir(d))) {
-        if (de->d_name[0] == '.') {
-            continue;
-        }
-
-        t_pid = atoi(de->d_name);
-
+    dirent* de;
+    while ((de = readdir(d.get()))) {
+        pid_t t_pid = atoi(de->d_name);
         if (!t_pid) {
             continue;
         }
 
         WriteValueToFile(value_, ProfileAction::RCT_TASK, uid, t_pid, logfailures_);
     }
-
-    closedir(d);
-
     return true;
 }
 
@@ -687,6 +676,86 @@ bool SetSchedulerPolicyAction::ExecuteForTask(pid_t tid) const {
     }
 
     return true;
+}
+
+// Read the memory.current value for the memcg, and prepare to pass it into memory.reclaim with an
+// optional swappiness argument.
+bool CompactMemcgAction::GenerateReclaimString(const std::string& memory_current_path,
+                                               std::string& out) const {
+    std::string memory_current_str;
+    if (!android::base::ReadFileToString(memory_current_path, &memory_current_str)) {
+        PLOG(ERROR) << "Failed to read " << memory_current_path;
+        return false;
+    }
+
+    memory_current_str = android::base::Trim(memory_current_str);
+    if (type_ == CompactMemcgAction::Type::FILE)
+        memory_current_str += " swappiness=0";
+    else if (type_ == CompactMemcgAction::Type::ANON)
+        memory_current_str += " swappiness=200";
+
+    out = std::move(memory_current_str);
+    return true;
+}
+
+bool CompactMemcgAction::Execute(const std::string& memory_current_path,
+                                 const std::string& memory_reclaim_path) const {
+    std::string reclaim_str;
+    if (!GenerateReclaimString(memory_current_path, reclaim_str)) return false;
+
+    if (!WriteStringToFile(reclaim_str, memory_reclaim_path) && errno != EAGAIN) {
+        // Reclaim of the entire memcg is likely to fail with EAGAIN. Ignore this case here.
+        PLOG(ERROR) << "Could not write " << reclaim_str << " to " << memory_reclaim_path;
+        return false;
+    }
+
+    return true;
+}
+
+bool CompactMemcgAction::ExecuteForUID(uid_t uid) const {
+    const std::string memory_current_path =
+            ConvertUidToPath(cgroup_v2_root_path_.c_str(), uid, true) + MEMORY_CURRENT_FILE;
+    const std::string memory_reclaim_path =
+            ConvertUidToPath(cgroup_v2_root_path_.c_str(), uid, true) + MEMORY_RECLAIM_FILE;
+
+    return Execute(memory_current_path, memory_reclaim_path);
+}
+
+bool CompactMemcgAction::ExecuteForProcess(uid_t uid, pid_t pid) const {
+    const std::string memory_current_path =
+            ConvertUidPidToPath(cgroup_v2_root_path_.c_str(), uid, pid, true) + MEMORY_CURRENT_FILE;
+    const std::string memory_reclaim_path =
+            ConvertUidPidToPath(cgroup_v2_root_path_.c_str(), uid, pid, true) + MEMORY_RECLAIM_FILE;
+
+    return Execute(memory_current_path, memory_reclaim_path);
+}
+
+bool CompactMemcgAction::IsValid(const std::string& memory_reclaim_path) const {
+    if (access(memory_reclaim_path.c_str(), F_OK) != 0) return false;
+
+    // Anon-only and file-only reclaim depend on memory.reclaim swappiness support:
+    // https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=68cd9050d871e4db5433420b5ceb32f5512d18bc
+    if (type_ != CompactMemcgAction::Type::FULL) {
+        return WriteStringToFile("0 swappiness=0", memory_reclaim_path);
+    }
+
+    return true;
+}
+
+// Ensure memcgs are activated all the way down to UID cgroups
+bool CompactMemcgAction::IsValidForUID(uid_t uid) const {
+    const std::string memory_reclaim_path =
+            ConvertUidToPath(cgroup_v2_root_path_.c_str(), uid, true) + MEMORY_RECLAIM_FILE;
+
+    return IsValid(memory_reclaim_path);
+}
+
+// Ensure memcgs are activated all the way down to PID cgroups
+bool CompactMemcgAction::IsValidForProcess(uid_t uid, pid_t pid) const {
+    const std::string memory_reclaim_path =
+            ConvertUidPidToPath(cgroup_v2_root_path_.c_str(), uid, pid, true) + MEMORY_RECLAIM_FILE;
+
+    return IsValid(memory_reclaim_path);
 }
 
 bool ApplyProfileAction::ExecuteForProcess(uid_t uid, pid_t pid) const {
@@ -1022,6 +1091,33 @@ bool TaskProfiles::Load(const CgroupMap& cg_map, const std::string& file_name) {
                         LOG(WARNING) << "Invalid priority value: " << priority_string;
                     }
                 }
+            } else if (action_name == "Compact") {
+                const std::map<std::string, CompactMemcgAction::Type> TYPE_MAP = {
+                        {"full", CompactMemcgAction::Type::FULL},
+                        {"anon", CompactMemcgAction::Type::ANON},
+                        {"file", CompactMemcgAction::Type::FILE},
+                };
+                const std::string type_str = params_val["Type"].asString();
+
+                const auto it = TYPE_MAP.find(type_str);
+                if (it == TYPE_MAP.end()) {
+                    LOG(WARNING) << "Compact: invalid compaction type " << type_str;
+                    continue;
+                }
+
+                auto controller = cg_map.FindController("memory");
+                if (controller.HasValue()) {
+                    if (controller.version() != 2) {
+                        LOG(WARNING) << "Compaction is currently supported only with memcg v2";
+                        continue;
+                    }
+                } else {
+                    LOG(WARNING) << "Compact: memory controller not found";
+                    continue;
+                }
+
+                const CompactMemcgAction::Type type = it->second;
+                profile->Add(std::make_unique<CompactMemcgAction>(type, controller.path()));
             } else {
                 LOG(WARNING) << "Unknown profile action: " << action_name;
             }

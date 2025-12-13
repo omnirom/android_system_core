@@ -31,10 +31,17 @@ LOCAL_POST_INSTALL_CMD := mkdir -p $(addprefix $(TARGET_ROOT_OUT)/, \
     linkerconfig second_stage_resources postinstall tmp $(BOARD_ROOT_EXTRA_FOLDERS)); \
     ln -sf /system/bin $(TARGET_ROOT_OUT)/bin; \
     ln -sf /system/etc $(TARGET_ROOT_OUT)/etc; \
-    ln -sf /data/user_de/0/com.android.shell/files/bugreports $(TARGET_ROOT_OUT)/bugreports; \
     ln -sfn /sys/kernel/debug $(TARGET_ROOT_OUT)/d; \
     ln -sf /storage/self/primary $(TARGET_ROOT_OUT)/sdcard; \
     ln -sf /product/etc/security/adb_keys $(TARGET_ROOT_OUT)/adb_keys
+
+# Currently it is being used for sdv product only, it doese not have the /data/user_de directory,
+# more context in b/319227059.
+ifdef PRODUCT_BUGREPORTS_SYMLINK_TARGET
+LOCAL_POST_INSTALL_CMD += ; ln -sf $(PRODUCT_BUGREPORTS_SYMLINK_TARGET) $(TARGET_ROOT_OUT)/bugreports
+else
+LOCAL_POST_INSTALL_CMD += ; ln -sf /data/user_de/0/com.android.shell/files/bugreports $(TARGET_ROOT_OUT)/bugreports
+endif
 
 ALL_ROOTDIR_SYMLINKS := \
   $(TARGET_ROOT_OUT)/bin \

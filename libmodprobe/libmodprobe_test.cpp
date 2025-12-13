@@ -24,15 +24,13 @@
 #include <modprobe/modprobe.h>
 
 #include "libmodprobe_test.h"
+#include "module_config_test.h"
 
 // Used by libmodprobe_ext_test to check if requested modules are present.
 std::vector<std::string> test_modules;
 
 // Used by libmodprobe_ext_test to report which modules would have been loaded.
 std::vector<std::string> modules_loaded;
-
-// Used by libmodprobe_ext_test to fake a kernel commandline
-std::string kernel_cmdline;
 
 TEST(libmodprobe, Test) {
     kernel_cmdline =
@@ -139,20 +137,8 @@ TEST(libmodprobe, Test) {
             "test11.ko\n";
 
     TemporaryDir dir;
-    auto dir_path = std::string(dir.path);
-    ASSERT_TRUE(android::base::WriteStringToFile(modules_alias, dir_path + "/modules.alias", 0600,
-                                                 getuid(), getgid()));
-
-    ASSERT_TRUE(android::base::WriteStringToFile(modules_dep, dir_path + "/modules.dep", 0600,
-                                                 getuid(), getgid()));
-    ASSERT_TRUE(android::base::WriteStringToFile(modules_softdep, dir_path + "/modules.softdep",
-                                                 0600, getuid(), getgid()));
-    ASSERT_TRUE(android::base::WriteStringToFile(modules_options, dir_path + "/modules.options",
-                                                 0600, getuid(), getgid()));
-    ASSERT_TRUE(android::base::WriteStringToFile(modules_load, dir_path + "/modules.load", 0600,
-                                                 getuid(), getgid()));
-    ASSERT_TRUE(android::base::WriteStringToFile(modules_blocklist, dir_path + "/modules.blocklist",
-                                                 0600, getuid(), getgid()));
+    WriteModuleConfigs(dir, modules_alias, modules_dep, modules_softdep, modules_options,
+                       modules_load, modules_blocklist);
 
     for (auto i = test_modules.begin(); i != test_modules.end(); ++i) {
         *i = dir.path + *i;

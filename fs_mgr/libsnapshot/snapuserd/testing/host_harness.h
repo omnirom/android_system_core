@@ -70,6 +70,17 @@ class TestBlockServerFactory final : public IBlockServerFactory {
     std::shared_ptr<IBlockServerOpener> CreateOpener(const std::string& misc_name) override;
     std::shared_ptr<TestBlockServerOpener> CreateTestOpener(const std::string& misc_name);
     bool DeleteQueue(const std::string& misc_name);
+    bool CreateDevice(const std::string& /*deviceName*/, uint64_t /*deviceSize*/,
+                      int /*num_queues*/) override {
+        return true;
+    };
+    bool StartDevice(const std::string& /*deviceName*/) override { return true; };
+    bool StopDevice(const std::string& /*deviceName*/) override { return true; };
+    std::optional<std::string> GetDeviceName(const std::string& /*misc_name*/) override {
+        return std::nullopt;
+    };
+    void SetUeventHelper(UeventHelperCallback /*callback*/) override { return; }
+    UeventHelperCallback GetUeventHelper() override { return nullptr; }
 
   private:
     std::unordered_map<std::string, std::shared_ptr<TestBlockServerQueue>> queues_;

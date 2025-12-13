@@ -19,6 +19,7 @@
 
 #include <utils/Looper.h>
 
+#include <atomic>
 #include <sys/eventfd.h>
 #include <cinttypes>
 
@@ -96,6 +97,10 @@ void Looper::setForThread(const sp<Looper>& looper) {
 
 sp<Looper> Looper::getForThread() {
     return gThreadLocalLooper;
+}
+
+void Looper::setSkipEpollWaitForZeroTimeout() {
+    Looper::sSkipEpollWaitIfPossible = true;
 }
 
 sp<Looper> Looper::prepare(int opts) {
@@ -196,6 +201,8 @@ int Looper::pollInner(int timeoutMillis) {
     ALOGD("%p ~ pollOnce - waiting: timeoutMillis=%d", this, timeoutMillis);
 #endif
 
+    int originalTimeout = timeoutMillis;
+
     // Adjust the timeout based on when the next message is due.
     if (timeoutMillis != 0 && mNextMessageUptime != LLONG_MAX) {
         nsecs_t now = systemTime(SYSTEM_TIME_MONOTONIC);
@@ -215,14 +222,20 @@ int Looper::pollInner(int timeoutMillis) {
     mResponses.clear();
     mResponseIndex = 0;
 
-    // We are about to idle.
-    mPolling = true;
-
+    int eventCount = 0;
     struct epoll_event eventItems[EPOLL_MAX_EVENTS];
-    int eventCount = epoll_wait(mEpollFd.get(), eventItems, EPOLL_MAX_EVENTS, timeoutMillis);
 
-    // No longer idling.
-    mPolling = false;
+    // A timeout of 0 indicates that there are already messages to handle, and
+    // we don't need to poll for more yet.
+    if (!sSkipEpollWaitIfPossible || originalTimeout != 0 || mRequests.size() > 0) {
+        // We are about to idle.
+        std::atomic_store_explicit(&mPolling, true, std::memory_order_relaxed);
+
+        eventCount = epoll_wait(mEpollFd.get(), eventItems, EPOLL_MAX_EVENTS, timeoutMillis);
+
+        // No longer idling.
+        std::atomic_store_explicit(&mPolling, false, std::memory_order_relaxed);
+    }
 
     // Acquire lock.
     mLock.lock();
@@ -673,7 +686,7 @@ void Looper::removeMessages(const sp<MessageHandler>& handler, int what) {
 }
 
 bool Looper::isPolling() const {
-    return mPolling;
+    return std::atomic_load_explicit(&mPolling, std::memory_order_relaxed);
 }
 
 uint32_t Looper::Request::getEpollEvents() const {

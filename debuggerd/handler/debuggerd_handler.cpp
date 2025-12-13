@@ -39,6 +39,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <android-base/file.h>
 #include <android-base/macros.h>
 #include <android-base/parsebool.h>
 #include <android-base/parseint.h>
@@ -102,19 +103,61 @@ static bool property_parse_bool(const char* name) {
   return cookie;
 }
 
+// Avoid using any other libc/libbase functions in this function to avoid doing
+// any allocations and to avoid calling any disallowed functions by accident.
+static const char* get_command_no_alloc(char* command, const size_t length) {
+  int fd = open("/proc/self/cmdline", O_RDONLY | O_CLOEXEC);
+  if (fd == -1) {
+    async_safe_format_log(ANDROID_LOG_WARN, "libc", "Opening /proc/self/cmdline failed: %s",
+                          strerrorname_np(errno));
+    return nullptr;
+  }
+  // Force the buffer to be null terminated to avoid cases where the first
+  // argument is longer than the total buffer. This might truncate the first
+  // argument of the command-line, but it's still possible to use the
+  // truncated name.
+  command[length - 1] = '\0';
+  ssize_t bytes = TEMP_FAILURE_RETRY(read(fd, command, length - 1));
+  close(fd);
+  if (bytes <= 0) {
+    async_safe_format_log(ANDROID_LOG_WARN, "libc", "/proc/self/cmdline read error: %s",
+                          bytes == -1 ? strerrorname_np(errno) : "zero bytes read");
+    return nullptr;
+  }
+
+  // Find the basename of the first argument in the command-line.
+  const char* arg0 = strrchr(command, '/');
+  return arg0 != nullptr ? &arg0[1] : command;
+}
+
 static bool is_permissive_mte() {
-  // Environment variable for testing or local use from shell.
+  // DO NOT REPLACE property_parse_bool with GetBoolProperty. That uses std::string which allocates,
+  // so it is not async-safe, and this function gets used in a signal handler.
   char* permissive_env = getenv("MTE_PERMISSIVE");
+  if (permissive_env && ParseBool(permissive_env) == ParseBoolResult::kTrue) {
+    return true;
+  }
+
+  if (property_parse_bool("persist.sys.mte.permissive") ||
+      property_parse_bool("persist.device_config.memory_safety_native.permissive.default")) {
+    return true;
+  }
+
+  // getprogrname() always returns nullptr in this context, so we need to read
+  // the cmdline directly to get the name of the running program.
+  // In addition, use /proc/self/cmdline instead of readlink of /proc/self/exe
+  // so that any process forked from the zygote has the correct name.
+  char command_buffer[256];
+  const char* command = get_command_no_alloc(command_buffer, sizeof(command_buffer));
+  if (command == nullptr) {
+    return false;
+  }
+
   char process_sysprop_name[512];
   async_safe_format_buffer(process_sysprop_name, sizeof(process_sysprop_name),
                            "persist.device_config.memory_safety_native.permissive.process.%s",
-                           getprogname());
-  // DO NOT REPLACE this with GetBoolProperty. That uses std::string which allocates, so it is
-  // not async-safe, and this function gets used in a signal handler.
-  return property_parse_bool("persist.sys.mte.permissive") ||
-         property_parse_bool("persist.device_config.memory_safety_native.permissive.default") ||
-         property_parse_bool(process_sysprop_name) ||
-         (permissive_env && ParseBool(permissive_env) == ParseBoolResult::kTrue);
+                           command);
+  return property_parse_bool(process_sysprop_name);
 }
 
 static bool parse_uint_with_error_reporting(const char* s, const char* name, int* v) {
@@ -421,41 +464,61 @@ static int debuggerd_dispatch_pseudothread(void* arg) {
     fatal_errno("failed to create pipe");
   }
 
-  uint32_t version;
-  ssize_t expected;
+  // The crash data is sent in four parts:
+  //   part 1: uint32_t (version number)
+  //   part 2: siginfo_t
+  //   part 3: ucontext_t
+  // Static executable crash:
+  //   part 4: uintptr_t (abort message pointer)
+  // Dynamic executable crash:
+  //   part 4: debugger_process_info
+  //     where debugger_process_info starts with uintptr_t abort_msg
 
+  // Verify that the CrashInfo structure is aligned such that there is no space
+  // between the fields since the parts are sent without space and read directly
+  // into a CrashInfo structure.
+  static_assert(offsetof(CrashInfo, c.version) == 0);
+  static_assert(offsetof(CrashInfo, c.version) + sizeof(uint32_t) ==
+                offsetof(CrashInfo, c.siginfo));
+  static_assert(offsetof(CrashInfo, c.siginfo) + sizeof(siginfo_t) ==
+                offsetof(CrashInfo, c.ucontext));
+  static_assert(offsetof(CrashInfo, c.ucontext) + sizeof(ucontext_t) ==
+                offsetof(CrashInfo, c.abort_msg_address));
+
+  uint32_t version;
   // ucontext_t is absurdly large on AArch64, so piece it together manually with writev.
   struct iovec iovs[4] = {
       {.iov_base = &version, .iov_len = sizeof(version)},
       {.iov_base = thread_info->siginfo, .iov_len = sizeof(siginfo_t)},
       {.iov_base = thread_info->ucontext, .iov_len = sizeof(ucontext_t)},
   };
+  constexpr size_t kCurrentCrashInfoSize = sizeof(version) + sizeof(siginfo_t) + sizeof(ucontext_t);
 
-  constexpr size_t kHeaderSize = sizeof(version) + sizeof(siginfo_t) + sizeof(ucontext_t);
-
+  ssize_t expected;
   if (thread_info->process_info.fdsan_table) {
     // Dynamic executables always use version 4. There is no need to increment the version number if
     // the format changes, because the sender (linker) and receiver (crash_dump) are version locked.
     version = 4;
-    expected = sizeof(CrashInfoHeader) + sizeof(CrashInfoDataDynamic);
+    expected = sizeof(CrashInfo);
 
-    static_assert(sizeof(CrashInfoHeader) + sizeof(CrashInfoDataDynamic) ==
-                      kHeaderSize + sizeof(thread_info->process_info),
+    static_assert(sizeof(CrashInfo) == kCurrentCrashInfoSize + sizeof(thread_info->process_info),
                   "Wire protocol structs do not match the data sent.");
-#define ASSERT_SAME_OFFSET(MEMBER1, MEMBER2) \
-    static_assert(sizeof(CrashInfoHeader) + offsetof(CrashInfoDataDynamic, MEMBER1) == \
-                      kHeaderSize + offsetof(debugger_process_info, MEMBER2), \
-                  "Wire protocol offset does not match data sent: " #MEMBER1);
-    ASSERT_SAME_OFFSET(fdsan_table_address, fdsan_table);
-    ASSERT_SAME_OFFSET(gwp_asan_state, gwp_asan_state);
-    ASSERT_SAME_OFFSET(gwp_asan_metadata, gwp_asan_metadata);
-    ASSERT_SAME_OFFSET(scudo_stack_depot, scudo_stack_depot);
-    ASSERT_SAME_OFFSET(scudo_region_info, scudo_region_info);
-    ASSERT_SAME_OFFSET(scudo_ring_buffer, scudo_ring_buffer);
-    ASSERT_SAME_OFFSET(scudo_ring_buffer_size, scudo_ring_buffer_size);
-    ASSERT_SAME_OFFSET(scudo_stack_depot_size, scudo_stack_depot_size);
-    ASSERT_SAME_OFFSET(recoverable_crash, recoverable_crash);
-    ASSERT_SAME_OFFSET(crash_detail_page, crash_detail_page);
+#define ASSERT_SAME_OFFSET(MEMBER1, MEMBER2)                                          \
+  static_assert(offsetof(CrashInfo, MEMBER1) ==                                       \
+                    kCurrentCrashInfoSize + offsetof(debugger_process_info, MEMBER2), \
+                "Wire protocol offset does not match data sent: " #MEMBER1);
+    static_assert(offsetof(debugger_process_info, abort_msg) == 0,
+                  "abort_msg must be the first element in debugger_process_info");
+    ASSERT_SAME_OFFSET(d.fdsan_table_address, fdsan_table);
+    ASSERT_SAME_OFFSET(d.gwp_asan_state, gwp_asan_state);
+    ASSERT_SAME_OFFSET(d.gwp_asan_metadata, gwp_asan_metadata);
+    ASSERT_SAME_OFFSET(d.scudo_stack_depot, scudo_stack_depot);
+    ASSERT_SAME_OFFSET(d.scudo_region_info, scudo_region_info);
+    ASSERT_SAME_OFFSET(d.scudo_ring_buffer, scudo_ring_buffer);
+    ASSERT_SAME_OFFSET(d.scudo_ring_buffer_size, scudo_ring_buffer_size);
+    ASSERT_SAME_OFFSET(d.scudo_stack_depot_size, scudo_stack_depot_size);
+    ASSERT_SAME_OFFSET(d.recoverable_crash, recoverable_crash);
+    ASSERT_SAME_OFFSET(d.crash_detail_page, crash_detail_page);
 #undef ASSERT_SAME_OFFSET
 
     iovs[3] = {.iov_base = &thread_info->process_info,
@@ -463,11 +526,10 @@ static int debuggerd_dispatch_pseudothread(void* arg) {
   } else {
     // Static executables always use version 1.
     version = 1;
-    expected = sizeof(CrashInfoHeader) + sizeof(CrashInfoDataStatic);
+    expected = sizeof(CrashInfoDataCommon);
 
-    static_assert(
-        sizeof(CrashInfoHeader) + sizeof(CrashInfoDataStatic) == kHeaderSize + sizeof(uintptr_t),
-        "Wire protocol structs do not match the data sent.");
+    static_assert(sizeof(CrashInfoDataCommon) == kCurrentCrashInfoSize + sizeof(uintptr_t),
+                  "Wire protocol structs do not match the data sent.");
 
     iovs[3] = {.iov_base = &thread_info->process_info.abort_msg, .iov_len = sizeof(uintptr_t)};
   }

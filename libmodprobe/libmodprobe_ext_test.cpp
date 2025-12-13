@@ -26,15 +26,14 @@
 #include <gtest/gtest.h>
 
 #include <modprobe/modprobe.h>
+#include <modprobe/utils.h>
 
 #include "libmodprobe_test.h"
 
-std::string Modprobe::GetKernelCmdline(void) {
-    return kernel_cmdline;
-}
+using android::modprobe::CanonicalizeModulePath;
 
 bool Modprobe::Insmod(const std::string& path_name, const std::string& parameters) {
-    auto deps = GetDependencies(MakeCanonical(path_name));
+    auto deps = GetDependencies(CanonicalizeModulePath(path_name));
     if (deps.empty()) {
         return false;
     }
@@ -47,7 +46,7 @@ bool Modprobe::Insmod(const std::string& path_name, const std::string& parameter
         }
     }
     std::string options;
-    auto options_iter = module_options_.find(MakeCanonical(path_name));
+    auto options_iter = module_options_.find(CanonicalizeModulePath(path_name));
     if (options_iter != module_options_.end()) {
         options = " " + options_iter->second;
     }

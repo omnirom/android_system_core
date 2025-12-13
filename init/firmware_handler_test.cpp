@@ -35,7 +35,8 @@ void FirmwareTestWithExternalHandler(const std::string& test_name, bool expect_n
     auto external_firmware_handler = ExternalFirmwareHandler(
             "/devices/led/firmware/test_firmware001.bin", getuid(), test_path);
 
-    auto firmware_handler = FirmwareHandler({"/test"}, {external_firmware_handler});
+    auto firmware_handler = FirmwareHandler({"/test"}, {external_firmware_handler},
+                                            /*serial_handler_after_cold_boot=*/false);
 
     auto uevent = Uevent{
             .path = "/devices/led/firmware/test_firmware001.bin",

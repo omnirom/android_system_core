@@ -129,7 +129,10 @@ std::vector<SuperImageExtent> SuperLayoutBuilder::GetImageLayout() {
 
     // Write the primary and backup copies of each metadata slot. When flashing,
     // all metadata copies are the same, even for different slots.
-    std::string metadata_bytes = SerializeMetadata(*metadata.get());
+    std::string metadata_bytes = ValidateAndSerializeMetadata(*metadata.get());
+    if (metadata_bytes.empty()) {
+        return {};
+    }
 
     // Align metadata size to 4KB. This makes the layout easily compatible with
     // libsparse.

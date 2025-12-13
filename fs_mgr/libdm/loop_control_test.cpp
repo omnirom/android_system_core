@@ -29,8 +29,10 @@
 #include "test_util.h"
 
 using namespace std;
-using namespace android::dm;
-using unique_fd = android::base::unique_fd;
+using android::base::Basename;
+using android::base::unique_fd;
+
+namespace android::dm {
 
 static unique_fd TempFile() {
     // A loop device needs to be at least one sector to actually work, so fill
@@ -62,3 +64,26 @@ TEST(libdm, LoopControl) {
     ASSERT_TRUE(android::base::ReadFully(loop_fd, buffer, sizeof(buffer)));
     ASSERT_EQ(memcmp(buffer, "Hello", 6), 0);
 }
+
+struct LoopControlTest : ::testing::Test {
+    LoopControl control;
+    // indirection to access private LoopControl::FindFreeLoopDevice() method
+    bool FindFreeLoopDevice(std::string* loopdev) const {
+        return control.FindFreeLoopDevice(loopdev);
+    }
+};
+
+TEST_F(LoopControlTest, AddRemove) {
+    // Get an id for a free loop device first
+    std::string path;
+    ASSERT_TRUE(FindFreeLoopDevice(&path));
+    std::string name = Basename(path);
+    ASSERT_EQ(name.substr(0, 4), "loop");
+    int id = atoi(name.substr(4).c_str());
+
+    ASSERT_FALSE(control.Add(id));
+    ASSERT_TRUE(control.Remove(id));
+    ASSERT_TRUE(control.Add(id));
+}
+
+}  // namespace android::dm

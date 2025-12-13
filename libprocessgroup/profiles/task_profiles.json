@@ -644,6 +644,42 @@
           }
         }
       ]
+    },
+    {
+      "Name": "CompactFull",
+      "Actions": [
+        {
+          "Name": "Compact",
+          "Params":
+          {
+            "Type": "full"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "CompactAnon",
+      "Actions": [
+        {
+          "Name": "Compact",
+          "Params":
+          {
+            "Type": "anon"
+          }
+        }
+      ]
+    },
+    {
+      "Name": "CompactFile",
+      "Actions": [
+        {
+          "Name": "Compact",
+          "Params":
+          {
+            "Type": "file"
+          }
+        }
+      ]
     }
   ],
 

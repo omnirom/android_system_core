@@ -70,6 +70,9 @@ class SplitFiemap final {
     // Flush all writes to all split files.
     bool Flush();
 
+    // Add more FiemapWriter files to grow
+    bool Grow(uint64_t bytes, uint64_t max_piece_size = 0);
+
     const std::vector<struct fiemap_extent>& extents();
     uint32_t block_size() const;
     uint64_t size() const { return total_size_; }
